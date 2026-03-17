@@ -1,0 +1,47 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.2.5'
+    id 'io.spring.dependency-management' version '1.1.4'
+}
+
+group = 'rheon'
+version = '1.0-SNAPSHOT'
+
+java {
+    sourceCompatibility = '17'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-validation' // API 입력값 검증용
+
+    // 2. 데이터베이스 & ORM (PostgreSQL)
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    runtimeOnly 'org.postgresql:postgresql'
+
+    // 3. 인메모리 캐시 (Redis - P95 응답속도 방어용)
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+
+    // 4. 대용량 데이터 처리 (Spring Batch - 새벽 슈퍼셀 API 수집용)
+    implementation 'org.springframework.boot:spring-boot-starter-batch'
+
+    // 5. 관제 및 모니터링 (K3s 환경 필수 운영템)
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    runtimeOnly 'io.micrometer:micrometer-registry-prometheus' // Prometheus 연동
+
+    // 6. 개발 편의성 (필수)
+    compileOnly 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+
+    // 7. 테스트 환경
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.springframework.batch:spring-batch-test'
+}
+
+test {
+    useJUnitPlatform()
+}
