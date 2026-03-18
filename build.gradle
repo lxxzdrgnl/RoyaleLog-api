@@ -47,6 +47,7 @@ dependencies {
     // 8. 개발 편의성
     compileOnly 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok'
+    developmentOnly 'org.springframework.boot:spring-boot-devtools'
 
     // 8. 테스트 환경
     testImplementation 'org.springframework.boot:spring-boot-starter-test'

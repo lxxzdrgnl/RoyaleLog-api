@@ -1,9 +1,9 @@
 # ── Stage 1: Build ──────────────────────────────────────────────
-FROM eclipse-temurin:17-jdk-alpine AS builder
+FROM eclipse-temurin:21-jdk-alpine AS builder
 WORKDIR /app
 
 # 의존성 캐시 레이어: Gradle wrapper + 설정 파일만 먼저 복사
-COPY gradlew settings.gradle build.gradle ./
+COPY gradlew settings.gradle build.gradle gradle.properties ./
 COPY gradle ./gradle
 RUN chmod +x gradlew && ./gradlew dependencies --no-daemon -q
 
@@ -12,7 +12,7 @@ COPY src ./src
 RUN ./gradlew bootJar --no-daemon -x test
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────
-FROM eclipse-temurin:17-jre-alpine
+FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
 
 # 보안: non-root 유저로 실행
