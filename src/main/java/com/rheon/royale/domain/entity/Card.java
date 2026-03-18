@@ -47,9 +47,13 @@ public class Card {
     @Column(name = "icon_url")
     private String iconUrl;
 
-    /** /cards items → true, supportItems → false */
+    /** 8장 덱에 포함 가능한 카드: /cards items → true, supportItems/tower → false */
     @Column(name = "is_deck_card", nullable = false)
     private boolean isDeckCard;
+
+    /** 타워 카드 (supportCards, id >= 159000000) — V3 seed로 관리 */
+    @Column(name = "is_tower", nullable = false)
+    private boolean isTower;
 
     @Column(name = "synced_at", nullable = false)
     private LocalDateTime syncedAt;
@@ -58,7 +62,7 @@ public class Card {
     public Card(String cardKey, Long apiId, String name, CardType cardType,
                 CardRarity rarity, Integer elixirCost, Integer maxLevel,
                 Integer maxEvoLevel, String iconUrl, boolean isDeckCard,
-                LocalDateTime syncedAt) {
+                boolean isTower, LocalDateTime syncedAt) {
         this.cardKey = cardKey;
         this.apiId = apiId;
         this.name = name;
@@ -69,6 +73,7 @@ public class Card {
         this.maxEvoLevel = maxEvoLevel;
         this.iconUrl = iconUrl;
         this.isDeckCard = isDeckCard;
+        this.isTower = isTower;
         this.syncedAt = syncedAt;
     }
 }

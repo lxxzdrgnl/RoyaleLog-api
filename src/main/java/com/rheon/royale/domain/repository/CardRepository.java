@@ -11,17 +11,17 @@ public interface CardRepository extends JpaRepository<Card, String> {
     @Modifying
     @Query(value = """
             INSERT INTO cards (card_key, api_id, name, card_type, rarity, elixir_cost,
-                               max_level, max_evo_level, icon_url, is_deck_card, synced_at)
+                               max_level, max_evo_level, icon_url, is_deck_card, is_tower, synced_at)
             VALUES (:cardKey, :apiId, :name, CAST(:cardType AS card_type_enum),
                     CAST(:rarity AS card_rarity_enum), :elixirCost, :maxLevel,
-                    :maxEvoLevel, :iconUrl, :isDeckCard, NOW())
+                    :maxEvoLevel, :iconUrl, :isDeckCard, :isTower, NOW())
             ON CONFLICT (card_key) DO UPDATE SET
-                name        = EXCLUDED.name,
-                elixir_cost = EXCLUDED.elixir_cost,
-                max_level   = EXCLUDED.max_level,
+                name          = EXCLUDED.name,
+                elixir_cost   = EXCLUDED.elixir_cost,
+                max_level     = EXCLUDED.max_level,
                 max_evo_level = EXCLUDED.max_evo_level,
-                icon_url    = EXCLUDED.icon_url,
-                synced_at   = EXCLUDED.synced_at
+                icon_url      = EXCLUDED.icon_url,
+                synced_at     = EXCLUDED.synced_at
             """, nativeQuery = true)
     void upsert(@Param("cardKey") String cardKey,
                 @Param("apiId") long apiId,
@@ -32,5 +32,6 @@ public interface CardRepository extends JpaRepository<Card, String> {
                 @Param("maxLevel") Integer maxLevel,
                 @Param("maxEvoLevel") Integer maxEvoLevel,
                 @Param("iconUrl") String iconUrl,
-                @Param("isDeckCard") boolean isDeckCard);
+                @Param("isDeckCard") boolean isDeckCard,
+                @Param("isTower") boolean isTower);
 }

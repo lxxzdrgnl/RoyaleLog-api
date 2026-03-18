@@ -59,7 +59,7 @@ public class CardSyncTasklet implements Tasklet {
             cardRepository.upsert(
                     card.id() + "_HERO", card.id(), card.name(), "HERO",
                     toRarityStr(card.rarity()), card.elixirCost(),
-                    card.maxLevel(), null, iconUrl, true
+                    card.maxLevel(), null, iconUrl, true, false
             );
             return 1;
         }
@@ -68,7 +68,7 @@ public class CardSyncTasklet implements Tasklet {
         cardRepository.upsert(
                 card.id() + "_NORMAL", card.id(), card.name(), "NORMAL",
                 toRarityStr(card.rarity()), card.elixirCost(),
-                card.maxLevel(), card.maxEvolutionLevel(), normalIcon, true
+                card.maxLevel(), card.maxEvolutionLevel(), normalIcon, true, false
         );
 
         if (hasEvolution) {
@@ -76,7 +76,7 @@ public class CardSyncTasklet implements Tasklet {
             cardRepository.upsert(
                     card.id() + "_EVOLUTION", card.id(), card.name() + " (Evolution)", "EVOLUTION",
                     toRarityStr(card.rarity()), card.elixirCost(),
-                    card.maxLevel(), card.maxEvolutionLevel(), evoIcon, true
+                    card.maxLevel(), card.maxEvolutionLevel(), evoIcon, true, false
             );
             return 2;
         }
@@ -84,13 +84,17 @@ public class CardSyncTasklet implements Tasklet {
         return 1;
     }
 
-    /** 서포트 카드 (supportItems) — 타워 카드 등, is_deck_card=false */
+    /**
+     * 서포트 카드 (supportItems) — is_deck_card=false, is_tower=false
+     * ⚠ 타워 카드는 /cards API에 미포함 → V3__tower_cards_seed.sql로 관리
+     *   이 메서드는 혹시 supportItems가 응답에 포함되는 경우 방어용으로만 남김
+     */
     private void upsertSupportCard(CrCardItem card) {
         String iconUrl = card.iconUrls() != null ? card.iconUrls().medium() : null;
         cardRepository.upsert(
                 card.id() + "_NORMAL", card.id(), card.name(), "NORMAL",
                 toRarityStr(card.rarity()), card.elixirCost(),
-                card.maxLevel(), null, iconUrl, false
+                card.maxLevel(), null, iconUrl, false, false
         );
     }
 

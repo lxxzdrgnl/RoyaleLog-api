@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS cards (
     max_level       INT,
     max_evo_level   INT,                                -- 외형(황금 카드 등) 판별용
     icon_url        TEXT,
-    is_deck_card    BOOLEAN      NOT NULL DEFAULT TRUE,  -- items=true, supportItems=false
+    is_deck_card    BOOLEAN      NOT NULL DEFAULT TRUE,   -- 8장 덱에 포함 가능한 카드
+    is_tower        BOOLEAN      NOT NULL DEFAULT FALSE,  -- 타워 카드 (supportCards, id>=159000000)
     synced_at       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
