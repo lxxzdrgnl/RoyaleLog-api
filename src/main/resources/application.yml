@@ -6,6 +6,10 @@ spring:
     version: 1.0.0
     build-time: "@buildTime@"   # Gradle processResources 필터링으로 주입
 
+  threads:
+    virtual:
+      enabled: true   # JDK 21 Virtual Thread — I/O bound 배치 작업 처리량 향상
+
   servlet:
     multipart:
       max-file-size: 10MB
@@ -41,6 +45,11 @@ spring:
       enabled: false          # Airflow가 트리거 — 앱 시작 시 자동 실행 비활성화
     jdbc:
       initialize-schema: always
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true   # 기존 DB가 있어도 마이그레이션 시작 가능
 
 # 슈퍼셀 Clash Royale 공식 API
 clash:
