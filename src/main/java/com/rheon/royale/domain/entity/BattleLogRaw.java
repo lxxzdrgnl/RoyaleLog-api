@@ -5,6 +5,8 @@ import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+
+import java.time.LocalDateTime;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -26,6 +28,13 @@ public class BattleLogRaw {
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "raw_json", nullable = false, columnDefinition = "jsonb")
     private String rawJson;
+
+    /** 0 = 미처리, N = N버전 analyzer 처리 완료 */
+    @Column(name = "analyzer_version", nullable = false)
+    private int analyzerVersion = 0;
+
+    @Column(name = "analyzer_processed_at")
+    private LocalDateTime analyzerProcessedAt;
 
     @Builder
     public BattleLogRaw(BattleLogRawId id, String playerTag,
