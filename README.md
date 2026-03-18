@@ -270,45 +270,50 @@ Response:
 
 ## DB 스키마
 
-### battle_log_raw
-```sql
-CREATE TABLE battle_log_raw (
-    id              BIGSERIAL PRIMARY KEY,
-    battle_id       VARCHAR(64) UNIQUE NOT NULL,   -- Idempotent 보장
-    player_tag      VARCHAR(32) NOT NULL,
-    opponent_tag    VARCHAR(32),
-    player_deck     JSONB NOT NULL,
-    opponent_deck   JSONB,
-    result          VARCHAR(8),                    -- 'win' | 'loss' | 'draw'
-    battle_time     TIMESTAMP NOT NULL,
-    raw_data        JSONB,
-    created_at      TIMESTAMP DEFAULT now()
-);
+Flyway V1 + V2 마이그레이션 기준. ELT 4단 분리 아키텍처.
+
+```
+Collector Job  →  battle_log_raw (raw_json JSONB 몰빵)
+                        ↓
+Analyzer Job   →  deck_dictionary / match_features / stats_decks_daily
 ```
 
-### stats_daily
-```sql
-CREATE TABLE stats_daily (
-    id              BIGSERIAL PRIMARY KEY,
-    stat_date       DATE NOT NULL,
-    deck_hash       VARCHAR(64) NOT NULL,
-    win_count       INT DEFAULT 0,
-    use_count       INT DEFAULT 0,
-    win_rate        NUMERIC(5,4),
-    UNIQUE (stat_date, deck_hash)                  -- Airflow 재실행 멱등성
-);
-```
+### V1: 수집 레이어
 
-### features_training
+| 테이블 | 역할 |
+|--------|------|
+| `battle_log_raw` | 원본 배틀 JSON (월별 파티션, 90일 보관) |
+| `players_to_crawl` | 수집 대상 PoL 상위 1000명 |
+| `cards` | 카드 메타 (이름, 희귀도, 타워여부) |
+
+### V2: Analyzer 레이어
+
+| 테이블 | 역할 |
+|--------|------|
+| `analyzer_meta` | 버전 관리 싱글톤 (`CHECK (id = 1)`) |
+| `deck_dictionary` | deck_hash → card_ids TEXT 정규화 |
+| `match_features` | ML Feature (월별 파티션, 90일 보관) |
+| `stats_decks_daily` | 덱별 일일 집계 역사 보관 (파티션) |
+| `stats_decks_daily_current` | API Serving 포인터 테이블 (Rename Swap 타겟) |
+| `stats_current` | VIEW → `stats_decks_daily_current` |
+
+#### 주요 설계 결정
+
 ```sql
-CREATE TABLE features_training (
-    id              BIGSERIAL PRIMARY KEY,
-    snapshot_date   DATE NOT NULL,
-    player_deck_vec INTEGER[8],                    -- One-hot 인코딩
-    opponent_deck_vec INTEGER[8],
-    result          SMALLINT,                      -- 1=win, 0=loss
-    created_at      TIMESTAMP DEFAULT now()
-);
+-- battle_log_raw: 파티셔닝 키 + 분석 추적 컬럼
+PRIMARY KEY (battle_id, created_at)       -- partition-aware dedup
+INDEX (created_at, analyzer_version)      -- 조회 패턴 기준 (정렬 먼저, 필터 나중)
+
+-- match_features: canonical dedup 키
+PRIMARY KEY (battle_id, battle_date)      -- PostgreSQL partitioned table PK 요건
+ON CONFLICT (battle_id, battle_date)      -- 앱 단에서 반드시 두 컬럼 모두 명시
+
+-- deck_dictionary: card_ids 저장 방식
+card_ids TEXT NOT NULL                    -- "id1-id2-id3" (숫자 오름차순, "-" 구분)
+-- BIGINT[] 미사용: B-tree 인덱스 불가, equality 느림, 정렬 보장 추적 어려움
+
+-- stats_decks_daily_current: Rename Swap (VIEW가 아닌 포인터 테이블)
+-- VIEW는 swap 중 dirty read 가능 → RENAME = 카탈로그 레벨 원자 연산
 ```
 
 ---
@@ -316,20 +321,40 @@ CREATE TABLE features_training (
 ## Spring Batch 파이프라인
 
 ```
-[Airflow Trigger]
+[Airflow Trigger — 매일 새벽]
      │
      ▼
-BattleLogJob
-  └── Step 1: fetchAndStoreRawLogs
-        ├── Reader  : ClashApiItemReader
-        │             - 슈퍼셀 API 호출 (상위 랭커 태그 순회)
-        │             - Rate Limit: 초당 10회 Throttling
-        │             - Retry: 3회 (429/5xx 한정)
-        ├── Processor: BattleLogProcessor
-        │             - 응답 JSON → BattleLogRaw 엔티티 변환
-        └── Writer  : BattleLogWriter
-                      - battle_log_raw INSERT (ON CONFLICT DO NOTHING)
-                      - Chunk size: 100
+CollectorJob (4 Steps)
+  ├── Step 0: PartitionManagerTasklet
+  │           - 당월 + 익월 파티션 생성 (IF NOT EXISTS)
+  │           - 3개월 전 파티션 DROP
+  │
+  ├── Step 1: SeasonIdTasklet
+  │           - GET /locations/global/seasons → currentSeasonId → JobExecutionContext
+  │
+  ├── Step 2: SyncRankingTasklet
+  │           - GET /pathoflegend/{seasonId}/rankings → players_to_crawl UPSERT
+  │
+  └── Step 3: CollectBattleLogStep (Chunk 10)
+              Reader    : players_to_crawl (JdbcPagingItemReader)
+              Processor : ClashRoyaleClient 호출, pathOfLegend 필터, battle_id 생성
+              Writer    : battle_log_raw INSERT (ON CONFLICT DO NOTHING)
+              FaultTolerant: Retry(3) + ExponentialBackOff / Skip(50)
+
+[Airflow Trigger — Collector 완료 후]
+     │
+     ▼
+AnalyzerJob (2 Steps)
+  ├── Step 1: DeckAnalyzerStep (Chunk 50)
+  │           Reader    : BattleLogRaw WHERE analyzerVersion < currentVersion (DB 조회)
+  │           Processor : raw_json 파싱 → deck_hash(MD5) 생성 → AnalyzedBattle
+  │           Writer    : deck_dictionary UPSERT + match_features UPSERT
+  │                       + battle_log_raw.analyzer_version 갱신
+  │
+  └── Step 2: StatsOverwriteStep (Tasklet)
+              match_features 전체 집계 → stats_new 생성
+              Rename Swap: stats_decks_daily_current → stats_old → stats_new → current
+              DROP stats_old
 ```
 
 ---
