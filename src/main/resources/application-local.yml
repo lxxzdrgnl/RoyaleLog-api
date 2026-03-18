@@ -1,0 +1,19 @@
+cors:
+  allowed-origins:
+    - http://localhost:5173
+    - http://localhost:3000
+
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: create-drop   # 로컬에서는 스키마 자동 생성
+    show-sql: true
+
+  batch:
+    jdbc:
+      initialize-schema: always
+
+logging:
+  level:
+    com.rheon.royale: DEBUG
+    org.springframework.batch: DEBUG
