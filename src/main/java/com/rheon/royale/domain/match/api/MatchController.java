@@ -13,6 +13,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(name = "Match", description = "플레이어 전적 조회")
@@ -53,7 +54,11 @@ public class MatchController {
     @GetMapping("/{playerTag}")
     public ApiResponse<PlayerBattlesResponse> getBattles(
             @Parameter(description = "플레이어 태그 (예: %23ABC123 또는 ABC123)", example = "%23GU2YR209R")
-            @PathVariable String playerTag) {
-        return ApiResponse.ok(matchService.getBattles(playerTag));
+            @PathVariable String playerTag,
+            @Parameter(description = "건너뛸 건수 (무한스크롤용)", example = "0")
+            @RequestParam(defaultValue = "0") int offset,
+            @Parameter(description = "조회 건수 (최대 25)", example = "25")
+            @RequestParam(defaultValue = "25") int limit) {
+        return ApiResponse.ok(matchService.getBattles(playerTag, offset, limit));
     }
 }

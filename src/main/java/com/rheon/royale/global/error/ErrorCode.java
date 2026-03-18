@@ -31,6 +31,10 @@ public enum ErrorCode {
     // Prediction (P)
     PREDICTION_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "P001", "예측 서버에 연결할 수 없습니다."),
 
+    // Batch (B)
+    JOB_ALREADY_RUNNING(HttpStatus.CONFLICT, "B001", "해당 날짜의 Job이 이미 실행 중입니다."),
+    JOB_EXECUTION_NOT_FOUND(HttpStatus.NOT_FOUND, "B002", "Job 실행 이력을 찾을 수 없습니다."),
+
     // External API (E)
     CLASH_API_ERROR(HttpStatus.BAD_GATEWAY, "E001", "Clash Royale API 호출 중 오류가 발생했습니다."),
     CLASH_API_RATE_LIMIT(HttpStatus.TOO_MANY_REQUESTS, "E002", "Clash Royale API 요청 한도를 초과했습니다.");

@@ -2,8 +2,8 @@ package com.rheon.royale.infrastructure.external.clashroyale;
 
 import com.rheon.royale.global.error.BusinessException;
 import com.rheon.royale.global.error.ErrorCode;
-import com.rheon.royale.global.util.TagUtils;
 import com.rheon.royale.infrastructure.external.clashroyale.dto.CrCardListResponse;
+import com.rheon.royale.infrastructure.external.clashroyale.dto.CrPlayerProfile;
 import com.rheon.royale.infrastructure.external.clashroyale.dto.CrRankingResponse;
 import com.rheon.royale.infrastructure.external.clashroyale.dto.CrSeasonListResponse;
 import jakarta.annotation.PostConstruct;
@@ -61,15 +61,35 @@ public class ClashRoyaleClient {
     }
 
     /**
+     * GET /players/{playerTag}
+     * 플레이어 프로필 전체 (트로피, 카드 컬렉션, 전투 통계 등)
+     */
+    public CrPlayerProfile getPlayerProfile(String playerTag) {
+        throttle();
+        log.debug("GET /players/{}", playerTag);
+        return webClient.get()
+                .uri("/players/{tag}", playerTag)
+                .retrieve()
+                .onStatus(s -> s == HttpStatus.NOT_FOUND,
+                        r -> Mono.error(new BusinessException(ErrorCode.PLAYER_NOT_FOUND)))
+                .onStatus(s -> s.value() == 429,
+                        r -> Mono.error(new BusinessException(ErrorCode.CLASH_API_RATE_LIMIT)))
+                .onStatus(HttpStatusCode::is5xxServerError,
+                        r -> Mono.error(new BusinessException(ErrorCode.CLASH_API_ERROR)))
+                .bodyToMono(CrPlayerProfile.class)
+                .retryWhen(retrySpec())
+                .block();
+    }
+
+    /**
      * GET /players/{playerTag}/battlelog
      * 플레이어 최근 배틀 로그 (raw JSON 그대로 반환 → battle_log_raw.raw_json)
      */
     public String getBattleLog(String playerTag) {
         throttle();
-        String encodedTag = TagUtils.encode(playerTag);
         log.debug("GET /players/{}/battlelog", playerTag);
         return webClient.get()
-                .uri("/players/{tag}/battlelog", encodedTag)
+                .uri("/players/{tag}/battlelog", playerTag)
                 .retrieve()
                 .onStatus(s -> s == HttpStatus.NOT_FOUND,
                         r -> Mono.error(new BusinessException(ErrorCode.PLAYER_NOT_FOUND)))
@@ -108,6 +128,27 @@ public class ClashRoyaleClient {
                 .onStatus(HttpStatusCode::is5xxServerError,
                         r -> Mono.error(new BusinessException(ErrorCode.CLASH_API_ERROR)))
                 .bodyToMono(CrRankingResponse.class)
+                .retryWhen(retrySpec())
+                .block();
+    }
+
+    /**
+     * GET /players/{playerTag}/masteries
+     * 플레이어 카드별 마스터리 (도전과제 진척도) 조회
+     */
+    public String getMasteries(String playerTag) {
+        throttle();
+        log.debug("GET /players/{}/masteries", playerTag);
+        return webClient.get()
+                .uri("/players/{tag}/masteries", playerTag)
+                .retrieve()
+                .onStatus(s -> s == HttpStatus.NOT_FOUND,
+                        r -> Mono.error(new BusinessException(ErrorCode.PLAYER_NOT_FOUND)))
+                .onStatus(s -> s.value() == 429,
+                        r -> Mono.error(new BusinessException(ErrorCode.CLASH_API_RATE_LIMIT)))
+                .onStatus(HttpStatusCode::is5xxServerError,
+                        r -> Mono.error(new BusinessException(ErrorCode.CLASH_API_ERROR)))
+                .bodyToMono(String.class)
                 .retryWhen(retrySpec())
                 .block();
     }

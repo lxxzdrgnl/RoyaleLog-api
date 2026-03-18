@@ -4,5 +4,5 @@ import java.util.List;
 
 public record PlayerBattlesResponse(
         String playerTag,
-        List<BattleLogEntry> battles
+        List<BattleEntry> battles
 ) {}

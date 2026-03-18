@@ -1,59 +1,89 @@
 package com.rheon.royale.domain.match.dao;
 
-import com.rheon.royale.domain.match.dto.BattleLogEntry;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.rheon.royale.batch.analyzer.DeckAnalyzerProcessor;
+import com.rheon.royale.batch.analyzer.dto.AnalyzedBattle;
+import com.rheon.royale.domain.entity.BattleLogRaw;
+import com.rheon.royale.domain.entity.BattleLogRawId;
+import com.rheon.royale.domain.match.application.OnDemandMatchService;
+import com.rheon.royale.domain.match.dto.BattleEntry;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
-import java.math.BigDecimal;
 import java.sql.Timestamp;
+import java.util.ArrayList;
 import java.util.List;
 
+@Slf4j
 @Repository
 @RequiredArgsConstructor
 public class MatchRepository {
 
     private final JdbcTemplate jdbcTemplate;
+    private final ObjectMapper objectMapper;
+    private final DeckAnalyzerProcessor deckAnalyzerProcessor;
+    private final OnDemandMatchService onDemandMatchService;
 
     /**
-     * 플레이어의 최근 배틀 조회
-     *
-     * battle_log_raw LEFT JOIN match_features:
-     *   - LEFT JOIN: 분석 전 배틀도 반환 (result/deckHash null)
-     *   - battle_date = created_at::date: partition pruning 지원
-     *   - ORDER BY created_at DESC: 최신 배틀 먼저
+     * 랭커 전적 조회 — battle_log_raw.raw_json 기반 파싱
+     * OnDemandMatchService.toParticipant() 재사용 → 응답 형태 통일
      */
-    public List<BattleLogEntry> findByPlayerTag(String playerTag, int limit) {
-        return jdbcTemplate.query("""
-                SELECT blr.battle_id,
-                       blr.battle_type,
-                       blr.created_at                   AS battle_time,
-                       blr.created_at::date             AS battle_date,
-                       mf.deck_hash,
-                       mf.opponent_hash,
-                       mf.result,
-                       mf.avg_level,
-                       mf.evolution_count
-                FROM battle_log_raw blr
-                LEFT JOIN match_features mf
-                       ON mf.battle_id   = blr.battle_id
-                      AND mf.battle_date = blr.created_at::date
-                WHERE blr.player_tag = ?
-                ORDER BY blr.created_at DESC
-                LIMIT ?
+    public List<BattleEntry> findByPlayerTag(String playerTag, int limit, int offset) {
+        List<RawRow> rows = jdbcTemplate.query("""
+                SELECT battle_id, battle_type, created_at, raw_json
+                FROM battle_log_raw
+                WHERE player_tag = ?
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
                 """,
-                (rs, rowNum) -> new BattleLogEntry(
+                (rs, rowNum) -> new RawRow(
                         rs.getString("battle_id"),
                         rs.getString("battle_type"),
-                        rs.getTimestamp("battle_time").toLocalDateTime(),
-                        rs.getDate("battle_date").toLocalDate(),
-                        rs.getString("deck_hash"),
-                        rs.getString("opponent_hash"),
-                        rs.getObject("result") != null ? rs.getInt("result") : null,
-                        rs.getBigDecimal("avg_level"),
-                        rs.getObject("evolution_count") != null ? rs.getInt("evolution_count") : null
+                        rs.getTimestamp("created_at"),
+                        rs.getString("raw_json")
                 ),
-                playerTag, limit);
+                playerTag, limit, offset);
+
+        List<BattleEntry> entries = new ArrayList<>();
+        for (RawRow row : rows) {
+            try {
+                JsonNode battle = objectMapper.readTree(row.rawJson());
+                var createdAt = row.createdAt().toLocalDateTime();
+
+                BattleLogRaw raw = BattleLogRaw.builder()
+                        .id(new BattleLogRawId(row.battleId(), createdAt))
+                        .playerTag(playerTag)
+                        .battleType(row.battleType())
+                        .rawJson(row.rawJson())
+                        .build();
+
+                AnalyzedBattle analyzed = deckAnalyzerProcessor.process(raw);
+
+                JsonNode teamPlayer     = battle.path("team").get(0);
+                JsonNode opponentPlayer = battle.path("opponent").get(0);
+
+                String gameMode = battle.path("gameMode").path("name").asText(null);
+                entries.add(new BattleEntry(
+                        row.battleId(),
+                        row.battleType(),
+                        gameMode,
+                        createdAt,
+                        onDemandMatchService.toParticipant(teamPlayer,
+                                analyzed != null ? analyzed.deckHash() : null,
+                                analyzed != null ? analyzed.avgLevel() : null,
+                                analyzed != null ? analyzed.evolutionCount() : 0),
+                        onDemandMatchService.toParticipant(opponentPlayer,
+                                analyzed != null ? analyzed.opponentHash() : null,
+                                null, 0)
+                ));
+            } catch (Exception e) {
+                log.warn("[MatchRepository] {} 파싱 실패: {}", row.battleId(), e.getMessage());
+            }
+        }
+        return entries;
     }
 
     public boolean existsByPlayerTag(String playerTag) {
@@ -62,4 +92,6 @@ public class MatchRepository {
                 Integer.class, playerTag);
         return cnt != null && cnt > 0;
     }
+
+    private record RawRow(String battleId, String battleType, Timestamp createdAt, String rawJson) {}
 }

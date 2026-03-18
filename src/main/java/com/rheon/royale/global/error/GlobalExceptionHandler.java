@@ -2,6 +2,8 @@ package com.rheon.royale.global.error;
 
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.batch.core.repository.JobExecutionAlreadyRunningException;
+import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.BindException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
@@ -16,6 +18,22 @@ import java.util.Map;
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    // RUNNING 중 재호출 → 409
+    @ExceptionHandler(JobExecutionAlreadyRunningException.class)
+    public ResponseEntity<ErrorResponse> handleJobAlreadyRunning(JobExecutionAlreadyRunningException e, HttpServletRequest request) {
+        log.warn("JobAlreadyRunning [{}] {}: {}", request.getMethod(), request.getRequestURI(), e.getMessage());
+        return ResponseEntity.status(ErrorCode.JOB_ALREADY_RUNNING.getStatus())
+                .body(ErrorResponse.of(request.getRequestURI(), ErrorCode.JOB_ALREADY_RUNNING));
+    }
+
+    // COMPLETED 상태에서 force 없이 재호출 → 409
+    @ExceptionHandler(JobInstanceAlreadyCompleteException.class)
+    public ResponseEntity<ErrorResponse> handleJobAlreadyComplete(JobInstanceAlreadyCompleteException e, HttpServletRequest request) {
+        log.warn("JobAlreadyComplete [{}] {}: {}", request.getMethod(), request.getRequestURI(), e.getMessage());
+        return ResponseEntity.status(ErrorCode.JOB_ALREADY_RUNNING.getStatus())
+                .body(ErrorResponse.of(request.getRequestURI(), ErrorCode.JOB_ALREADY_RUNNING));
+    }
 
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<ErrorResponse> handleBusinessException(BusinessException e, HttpServletRequest request) {

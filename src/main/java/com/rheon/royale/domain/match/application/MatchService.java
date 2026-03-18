@@ -1,13 +1,10 @@
 package com.rheon.royale.domain.match.application;
 
 import com.rheon.royale.domain.match.dao.MatchRepository;
-import com.rheon.royale.domain.match.dto.BattleLogEntry;
+import com.rheon.royale.domain.match.dto.BattleEntry;
 import com.rheon.royale.domain.match.dto.PlayerBattlesResponse;
-import com.rheon.royale.global.error.BusinessException;
-import com.rheon.royale.global.error.ErrorCode;
 import com.rheon.royale.global.util.TagUtils;
 import lombok.RequiredArgsConstructor;
-import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -19,23 +16,31 @@ public class MatchService {
     static final int DEFAULT_LIMIT = 25;
 
     private final MatchRepository matchRepository;
+    private final OnDemandMatchService onDemandMatchService;
 
     /**
      * 플레이어 태그로 최근 배틀 조회
      *
-     * 캐시 전략:
-     *   - TTL 5분: 외부 API 어뷰징 방지 (유저가 짧은 시간 반복 조회)
-     *   - key = 정규화된 태그 (#ABC123) → 대소문자 혼용 방지
+     * [조회 전략]
+     *   1. DB에 수집된 데이터가 있으면 (랭커) → DB + raw_json 파싱 후 반환
+     *   2. DB에 없으면 (일반 유저) → Clash API 실시간 호출 + 인메모리 분석 후 반환
+     *      - battle_log_raw 에 저장하지 않음 → Analyzer Job 통계 오염 방지
+     *      - 결과는 Redis 5분 캐시
      */
-    @Cacheable(value = "playerBattleLog", key = "#tag.toUpperCase()")
-    public PlayerBattlesResponse getBattles(String tag) {
+    public PlayerBattlesResponse getBattles(String tag, int offset, int limit) {
         String normalizedTag = TagUtils.normalize(tag);
+        int safeLimit = Math.min(limit, DEFAULT_LIMIT);
 
         if (!matchRepository.existsByPlayerTag(normalizedTag)) {
-            throw new BusinessException(ErrorCode.PLAYER_NOT_FOUND);
+            // 온디맨드: CR API 최대 25건, offset으로 슬라이싱
+            List<BattleEntry> all = onDemandMatchService.fetchAndAnalyze(normalizedTag);
+            List<BattleEntry> sliced = offset < all.size()
+                    ? all.subList(offset, Math.min(offset + safeLimit, all.size()))
+                    : List.of();
+            return new PlayerBattlesResponse(normalizedTag, sliced);
         }
 
-        List<BattleLogEntry> battles = matchRepository.findByPlayerTag(normalizedTag, DEFAULT_LIMIT);
+        List<BattleEntry> battles = matchRepository.findByPlayerTag(normalizedTag, safeLimit, offset);
         return new PlayerBattlesResponse(normalizedTag, battles);
     }
 }

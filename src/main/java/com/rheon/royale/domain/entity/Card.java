@@ -5,8 +5,6 @@ import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
-import org.hibernate.annotations.JdbcType;
-import org.hibernate.dialect.PostgreSQLEnumJdbcType;
 
 import java.time.LocalDateTime;
 
@@ -27,11 +25,11 @@ public class Card {
     @Column(name = "name", nullable = false, length = 100)
     private String name;
 
-    @JdbcType(PostgreSQLEnumJdbcType.class)
+    @Enumerated(EnumType.STRING)
     @Column(name = "card_type", nullable = false)
     private CardType cardType;
 
-    @JdbcType(PostgreSQLEnumJdbcType.class)
+    @Enumerated(EnumType.STRING)
     @Column(name = "rarity")
     private CardRarity rarity;
 
