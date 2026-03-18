@@ -11,16 +11,29 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 
 /**
  * 월별 파티션 자동 관리 Tasklet
- * - 당월 + 익월 파티션 생성 (IF NOT EXISTS)
- * - 90일 이전(3개월 전) 파티션 DROP
+ *
+ * 관리 대상:
+ *   - battle_log_raw   (Raw 레이어)
+ *   - match_features   (ML Feature 레이어)
+ *
+ * 전략:
+ *   - 당월 + 익월 파티션 생성 (IF NOT EXISTS)
+ *   - 90일 이전(3개월 전) 파티션 DROP
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class PartitionManagerTasklet implements Tasklet {
+
+    private static final List<String> PARTITIONED_TABLES = List.of(
+            "battle_log_raw",
+            "match_features",
+            "stats_decks_daily"
+    );
 
     private final JdbcTemplate jdbcTemplate;
 
@@ -28,37 +41,39 @@ public class PartitionManagerTasklet implements Tasklet {
     public RepeatStatus execute(StepContribution contribution, ChunkContext chunkContext) {
         LocalDate today = LocalDate.now();
 
-        createPartitionIfAbsent(today);
-        createPartitionIfAbsent(today.plusMonths(1));
-        dropOldPartitionIfExists(today.minusMonths(3));
+        for (String table : PARTITIONED_TABLES) {
+            createPartitionIfAbsent(table, today);
+            createPartitionIfAbsent(table, today.plusMonths(1));
+            dropOldPartitionIfExists(table, today.minusMonths(3));
+        }
 
         return RepeatStatus.FINISHED;
     }
 
-    private void createPartitionIfAbsent(LocalDate month) {
-        String partitionName = partitionName(month);
+    private void createPartitionIfAbsent(String table, LocalDate month) {
+        String partitionName = partitionName(table, month);
         LocalDate start = month.withDayOfMonth(1);
         LocalDate end = start.plusMonths(1);
 
-        String sql = String.format("""
-                CREATE TABLE IF NOT EXISTS %s PARTITION OF battle_log_raw
+        jdbcTemplate.execute(String.format("""
+                CREATE TABLE IF NOT EXISTS %s PARTITION OF %s
                 FOR VALUES FROM ('%s') TO ('%s')
                 """,
                 partitionName,
+                table,
                 start.format(DateTimeFormatter.ISO_LOCAL_DATE),
-                end.format(DateTimeFormatter.ISO_LOCAL_DATE));
+                end.format(DateTimeFormatter.ISO_LOCAL_DATE)));
 
-        jdbcTemplate.execute(sql);
         log.info("[PartitionManager] 파티션 확인/생성: {}", partitionName);
     }
 
-    private void dropOldPartitionIfExists(LocalDate month) {
-        String partitionName = partitionName(month);
+    private void dropOldPartitionIfExists(String table, LocalDate month) {
+        String partitionName = partitionName(table, month);
         jdbcTemplate.execute("DROP TABLE IF EXISTS " + partitionName);
-        log.info("[PartitionManager] 오래된 파티션 DROP (없으면 무시): {}", partitionName);
+        log.info("[PartitionManager] 오래된 파티션 DROP: {}", partitionName);
     }
 
-    private String partitionName(LocalDate month) {
-        return String.format("battle_log_raw_%d_%02d", month.getYear(), month.getMonthValue());
+    private String partitionName(String table, LocalDate month) {
+        return String.format("%s_%d_%02d", table, month.getYear(), month.getMonthValue());
     }
 }
