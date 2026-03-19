@@ -23,11 +23,6 @@ public interface PlayerToCrawlRepository extends JpaRepository<PlayerToCrawl, St
                       @Param("name") String name,
                       @Param("rank") int rank);
 
-    /** 랭킹 갱신 전 전체 비활성화 (이후 upsertRanked 로 현재 랭킹만 재활성화) */
-    @Modifying
-    @Query("UPDATE PlayerToCrawl p SET p.isActive = false, p.updatedAt = CURRENT_TIMESTAMP WHERE p.isActive = true")
-    int deactivateAll();
-
     /** 배틀 로그 수집 완료 시 last_crawled_at 갱신 */
     @Modifying
     @Query("UPDATE PlayerToCrawl p SET p.lastCrawledAt = CURRENT_TIMESTAMP WHERE p.playerTag = :tag")

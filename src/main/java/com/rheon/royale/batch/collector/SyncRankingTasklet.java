@@ -37,10 +37,8 @@ public class SyncRankingTasklet implements Tasklet {
         List<CrRankingPlayer> allPlayers = fetchAllRankedPlayers(seasonId);
         log.info("[SyncRanking] 수집된 랭커 수: {}", allPlayers.size());
 
-        // 2. 기존 활성 플레이어 전체 비활성화
-        playerToCrawlRepository.deactivateAll();
-
-        // 3. 현재 랭킹 플레이어 UPSERT (is_active=true 로 재활성화)
+        // 2. 현재 랭킹 플레이어 UPSERT (current_rank, name 갱신 + is_active=true 보장)
+        //    deactivateAll() 제거: 전체 수집 대상이 BFS로 확장되므로 랭킹 탈락자도 수집 유지
         for (CrRankingPlayer player : allPlayers) {
             playerToCrawlRepository.upsertRanked(player.tag(), player.name(), player.rank());
         }

@@ -82,7 +82,7 @@ public class CollectorJobConfig {
     @Bean
     public Step collectBattleLogStep(SynchronizedItemStreamReader<PlayerToCrawl> synchronizedPlayerReader) {
         return new StepBuilder("collectBattleLogStep", jobRepository)
-                .<PlayerToCrawl, Future<PlayerBattleLogs>>chunk(100, transactionManager)
+                .<PlayerToCrawl, Future<PlayerBattleLogs>>chunk(200, transactionManager)
                 .reader(synchronizedPlayerReader)
                 .processor(asyncProcessor())
                 .writer(asyncWriter())
@@ -92,8 +92,8 @@ public class CollectorJobConfig {
     @Bean
     public AsyncItemProcessor<PlayerToCrawl, PlayerBattleLogs> asyncProcessor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(35);
-        executor.setMaxPoolSize(35);
+        executor.setCorePoolSize(50);
+        executor.setMaxPoolSize(50);
         executor.setThreadNamePrefix("collector-");
         executor.initialize();
 
@@ -127,7 +127,7 @@ public class CollectorJobConfig {
         return new JpaPagingItemReaderBuilder<PlayerToCrawl>()
                 .name("playerToCrawlReader")
                 .entityManagerFactory(entityManagerFactory)
-                .pageSize(100)
+                .pageSize(200)
                 .saveState(false)  // AsyncItemProcessor 환경에서 상태 저장 비활성화
                 .queryString("""
                         SELECT p FROM PlayerToCrawl p
