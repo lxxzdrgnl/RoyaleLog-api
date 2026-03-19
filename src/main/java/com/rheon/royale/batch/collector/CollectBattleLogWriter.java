@@ -35,9 +35,9 @@ public class CollectBattleLogWriter implements ItemWriter<PlayerBattleLogs> {
             INSERT INTO players_to_crawl (player_tag, name, is_active, updated_at)
             VALUES (?, ?, true, NOW())
             ON CONFLICT (player_tag) DO UPDATE
-                SET name       = COALESCE(EXCLUDED.name, players_to_crawl.name),
-                    is_active  = true,
+                SET name      = EXCLUDED.name,
                     updated_at = NOW()
+            WHERE players_to_crawl.name IS DISTINCT FROM EXCLUDED.name
             """;
 
     @Override
@@ -89,11 +89,16 @@ public class CollectBattleLogWriter implements ItemWriter<PlayerBattleLogs> {
                     .map(e -> new Object[]{e.getKey(), e.getValue()})
                     .toList();
 
-            jdbcTemplate.batchUpdate(UPSERT_OPPONENT_SQL, opponentArgs, opponentArgs.size(),
-                    (ps, args) -> {
-                        ps.setString(1, (String) args[0]);
-                        ps.setString(2, (String) args[1]);
-                    });
+            // 50개씩 나눠서 UPSERT — 대량 GIN 업데이트 분산
+            int batchSize = 50;
+            for (int i = 0; i < opponentArgs.size(); i += batchSize) {
+                List<Object[]> sub = opponentArgs.subList(i, Math.min(i + batchSize, opponentArgs.size()));
+                jdbcTemplate.batchUpdate(UPSERT_OPPONENT_SQL, sub, sub.size(),
+                        (ps, args) -> {
+                            ps.setString(1, (String) args[0]);
+                            ps.setString(2, (String) args[1]);
+                        });
+            }
 
             log.debug("[Writer] players_to_crawl 상대방 UPSERT {}명", chunkOpponents.size());
         }

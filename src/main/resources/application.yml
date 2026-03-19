@@ -56,7 +56,7 @@ clash:
   api:
     base-url: https://api.clashroyale.com/v1
     token: ${CLASH_API_TOKEN}
-    rate-limit: 10            # 초당 최대 요청 수
+    rate-limit: 60            # 초당 최대 요청 수 (실측 burst ~95, 60으로 안전 마진)
     retry-max: 3              # 429/5xx 재시도 횟수
 
 # FastAPI ML 서빙 서버

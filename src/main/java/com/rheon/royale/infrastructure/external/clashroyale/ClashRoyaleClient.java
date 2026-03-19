@@ -1,5 +1,6 @@
 package com.rheon.royale.infrastructure.external.clashroyale;
 
+import com.google.common.util.concurrent.RateLimiter;
 import com.rheon.royale.global.error.BusinessException;
 import com.rheon.royale.global.error.ErrorCode;
 import com.rheon.royale.infrastructure.external.clashroyale.dto.CrCardListResponse;
@@ -17,6 +18,7 @@ import reactor.core.publisher.Mono;
 import reactor.util.retry.Retry;
 
 import java.time.Duration;
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Component
@@ -28,15 +30,16 @@ public class ClashRoyaleClient {
 
     private WebClient webClient;
     /**
-     * [아키텍처 제약] Rate Limiting — 현재 로컬 synchronized 방식
+     * [아키텍처 제약] Rate Limiting — Guava RateLimiter
      *
-     * 현재: 단일 파드 환경이므로 로컬 synchronized로 충분
-     * 미래: K3s에서 파드 2개 이상 Scale-out 시 글로벌 Rate Limit 필요
-     *       → Redis Bucket4j 또는 Airflow Task Concurrency=1로 교체해야 함
-     *       → 미교체 시 파드 A+B 합산 요청이 API 한도 초과 → IP 밴 위험
+     * Guava RateLimiter는 내부적으로 lock 점유 시간을 최소화한 토큰 버킷 방식.
+     * acquire()가 필요한 만큼만 sleep하고 락을 즉시 반환 → 20개 async 스레드가
+     * 진정한 병렬로 동작 (각자 다른 시간에 슬롯 예약, 락 경합 최소화).
+     *
+     * 현재: 단일 파드 환경이므로 로컬 RateLimiter로 충분
+     * 미래: K3s Scale-out 시 Redis Bucket4j로 교체 필요
      */
-    private long intervalMs;          // 요청 간 최소 간격 (ms)
-    private long lastCallTime = 0L;
+    private RateLimiter rateLimiter;
 
     @PostConstruct
     public void init() {
@@ -44,7 +47,8 @@ public class ClashRoyaleClient {
                 .baseUrl(props.getBaseUrl())
                 .defaultHeader("Authorization", "Bearer " + props.getToken())
                 .build();
-        this.intervalMs = 1000L / props.getRateLimit();
+        // warmupPeriod=2s: 초반 burst 억제 → 슬로우 스타트 후 정상 rate 유지 (429 방지)
+        this.rateLimiter = RateLimiter.create(props.getRateLimit(), 2, TimeUnit.SECONDS);
     }
 
     // ----------------------------------------------------------------
@@ -184,21 +188,14 @@ public class ClashRoyaleClient {
     // ----------------------------------------------------------------
 
     /**
-     * 레이트 리밋: 초당 최대 rateLimit 건 (기본 10 req/s = 100ms 간격)
-     * Spring Batch 단일 스레드 Step 기준 — synchronized 로 충분
+     * 레이트 리밋: 초당 최대 rateLimit 건 (rate-limit: 30 → 33ms 간격)
+     *
+     * Guava RateLimiter.acquire()는 토큰을 가져올 때까지 정확히 필요한 시간만 대기.
+     * lock 점유 최소화 → 20개 async 스레드가 각자 다른 시간에 슬롯을 예약하고
+     * 병렬로 API를 호출 → 진정한 멀티스레드 처리.
      */
-    private synchronized void throttle() {
-        long now = System.currentTimeMillis();
-        long elapsed = now - lastCallTime;
-        if (elapsed < intervalMs) {
-            try {
-                Thread.sleep(intervalMs - elapsed);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new BusinessException(ErrorCode.INTERNAL_SERVER_ERROR);
-            }
-        }
-        lastCallTime = System.currentTimeMillis();
+    private void throttle() {
+        rateLimiter.acquire();
     }
 
     /**

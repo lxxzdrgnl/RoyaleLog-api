@@ -7,6 +7,8 @@ import com.rheon.royale.batch.collector.dto.PlayerBattleLogs;
 import com.rheon.royale.domain.entity.BattleLogRaw;
 import com.rheon.royale.domain.entity.BattleLogRawId;
 import com.rheon.royale.domain.entity.PlayerToCrawl;
+import com.rheon.royale.global.error.BusinessException;
+import com.rheon.royale.global.error.ErrorCode;
 import com.rheon.royale.global.util.BattleHashUtils;
 import com.rheon.royale.infrastructure.external.clashroyale.ClashRoyaleClient;
 import lombok.RequiredArgsConstructor;
@@ -32,7 +34,20 @@ public class CollectBattleLogProcessor implements ItemProcessor<PlayerToCrawl, P
 
     @Override
     public PlayerBattleLogs process(PlayerToCrawl player) throws Exception {
-        String rawJson = clashRoyaleClient.getBattleLog(player.getPlayerTag());
+        String rawJson;
+        try {
+            long t0 = System.currentTimeMillis();
+            rawJson = clashRoyaleClient.getBattleLog(player.getPlayerTag());
+            log.debug("[Processor] {} API latency={}ms", player.getPlayerTag(), System.currentTimeMillis() - t0);
+        } catch (BusinessException e) {
+            // 404, 400: 존재하지 않는 유저 → skip (null 반환)
+            // 429/5xx: ClashRoyaleClient retrySpec이 3회 재시도 후 던짐 → skip
+            log.warn("[Processor] {}: API 호출 실패 ({}) → skip", player.getPlayerTag(), e.getErrorCode());
+            return null;
+        } catch (Exception e) {
+            log.warn("[Processor] {}: 예상치 못한 오류 → skip. {}", player.getPlayerTag(), e.getMessage());
+            return null;
+        }
         JsonNode battles = objectMapper.readTree(rawJson);
 
         List<BattleLogRaw> polBattles = new ArrayList<>();

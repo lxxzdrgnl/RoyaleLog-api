@@ -33,6 +33,7 @@ dependencies {
 
     // 4. 대용량 데이터 처리 (Spring Batch - 새벽 슈퍼셀 API 수집용)
     implementation 'org.springframework.boot:spring-boot-starter-batch'
+    implementation 'org.springframework.batch:spring-batch-integration'
 
     // 5. 관제 및 모니터링
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
@@ -45,7 +46,10 @@ dependencies {
     implementation 'org.flywaydb:flyway-core:10.20.1'
     implementation 'org.flywaydb:flyway-database-postgresql:10.20.1'
 
-    // 8. 개발 편의성
+    // 8. Rate Limiting
+    implementation 'com.google.guava:guava:33.2.1-jre'
+
+    // 9. 개발 편의성
     compileOnly 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok'
     developmentOnly 'org.springframework.boot:spring-boot-devtools'

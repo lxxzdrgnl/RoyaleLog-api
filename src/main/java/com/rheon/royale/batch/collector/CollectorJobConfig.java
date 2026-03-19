@@ -2,23 +2,25 @@ package com.rheon.royale.batch.collector;
 
 import com.rheon.royale.batch.collector.dto.PlayerBattleLogs;
 import com.rheon.royale.domain.entity.PlayerToCrawl;
-import com.rheon.royale.global.error.BusinessException;
-import com.rheon.royale.global.error.ErrorCode;
-import org.springframework.dao.DataIntegrityViolationException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
+import org.springframework.batch.integration.async.AsyncItemProcessor;
+import org.springframework.batch.integration.async.AsyncItemWriter;
 import org.springframework.batch.item.database.JpaPagingItemReader;
 import org.springframework.batch.item.database.builder.JpaPagingItemReaderBuilder;
+import org.springframework.batch.item.support.SynchronizedItemStreamReader;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import jakarta.persistence.EntityManagerFactory;
 import java.util.Map;
+import java.util.concurrent.Future;
 
 @Configuration
 @RequiredArgsConstructor
@@ -67,26 +69,49 @@ public class CollectorJobConfig {
     }
 
     /**
-     * Chunk(10): 10명씩 읽고 → API 호출 → DB 저장 → 커밋
-     * FaultTolerant:
-     *   - Retry(3): 429, 5xx (BusinessException RATE_LIMIT / API_ERROR)
-     *   - Skip(50): 404, 400 (PLAYER_NOT_FOUND 등)
+     * AsyncItemProcessor (20 threads): API 호출 병렬화
+     * AsyncItemWriter: Future 결과 모아서 단일 스레드 Writer 위임 → DB 직렬 쓰기, 데드락 없음
+     * FaultTolerant 제거: Spring Batch AsyncItemProcessor + FaultTolerant 조합 미지원
+     *   → 예외 처리는 CollectBattleLogProcessor 내부에서 직접 핸들링
+     *   → 404/5xx: Processor catch → null 반환 (Spring Batch 자동 skip)
+     *   → 429/5xx retry: ClashRoyaleClient 내부 retrySpec 처리
      */
     @Bean
     public Step collectBattleLogStep() {
         return new StepBuilder("collectBattleLogStep", jobRepository)
-                .<PlayerToCrawl, PlayerBattleLogs>chunk(10, transactionManager)
-                .reader(playerToCrawlReader())
-                .processor(collectBattleLogProcessor)
-                .writer(collectBattleLogWriter)
-                .faultTolerant()
-                .retryLimit(3)
-                .retry(BusinessException.class)  // RATE_LIMIT / API_ERROR → ClashRoyaleClient retrySpec 처리
-                .skipLimit(50)
-                .skip(BusinessException.class)              // PLAYER_NOT_FOUND(404) 등 개별 실패는 Skip
-                .skip(DataIntegrityViolationException.class) // 파티션 없음 등 DB 제약 에러 → Job 전체 죽이지 않도록
-                .listener(collectBattleLogSkipListener)      // Skip 발생 시 DLQ 적재 (침묵 실패 방지)
+                .<PlayerToCrawl, Future<PlayerBattleLogs>>chunk(100, transactionManager)
+                .reader(synchronizedPlayerReader())
+                .processor(asyncProcessor())
+                .writer(asyncWriter())
                 .build();
+    }
+
+    @Bean
+    public AsyncItemProcessor<PlayerToCrawl, PlayerBattleLogs> asyncProcessor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(35);
+        executor.setMaxPoolSize(35);
+        executor.setThreadNamePrefix("collector-");
+        executor.initialize();
+
+        AsyncItemProcessor<PlayerToCrawl, PlayerBattleLogs> processor = new AsyncItemProcessor<>();
+        processor.setDelegate(collectBattleLogProcessor);
+        processor.setTaskExecutor(executor);
+        return processor;
+    }
+
+    @Bean
+    public AsyncItemWriter<PlayerBattleLogs> asyncWriter() {
+        AsyncItemWriter<PlayerBattleLogs> writer = new AsyncItemWriter<>();
+        writer.setDelegate(collectBattleLogWriter);
+        return writer;
+    }
+
+    @Bean
+    public SynchronizedItemStreamReader<PlayerToCrawl> synchronizedPlayerReader() {
+        SynchronizedItemStreamReader<PlayerToCrawl> reader = new SynchronizedItemStreamReader<>();
+        reader.setDelegate(playerToCrawlReader());
+        return reader;
     }
 
     @Bean
@@ -94,7 +119,8 @@ public class CollectorJobConfig {
         return new JpaPagingItemReaderBuilder<PlayerToCrawl>()
                 .name("playerToCrawlReader")
                 .entityManagerFactory(entityManagerFactory)
-                .pageSize(10)
+                .pageSize(100)
+                .saveState(false)  // AsyncItemProcessor 환경에서 상태 저장 비활성화
                 .queryString("""
                         SELECT p FROM PlayerToCrawl p
                         WHERE p.isActive = true
