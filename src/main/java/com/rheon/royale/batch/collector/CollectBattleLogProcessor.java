@@ -7,6 +7,7 @@ import com.rheon.royale.batch.collector.dto.PlayerBattleLogs;
 import com.rheon.royale.domain.entity.BattleLogRaw;
 import com.rheon.royale.domain.entity.BattleLogRawId;
 import com.rheon.royale.domain.entity.PlayerToCrawl;
+import com.rheon.royale.domain.repository.PlayerToCrawlRepository;
 import com.rheon.royale.global.error.BusinessException;
 import com.rheon.royale.global.error.ErrorCode;
 import com.rheon.royale.global.util.BattleHashUtils;
@@ -15,6 +16,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.batch.item.ItemProcessor;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -25,12 +27,15 @@ import java.util.Map;
 @Slf4j
 @Component
 @RequiredArgsConstructor
+@Transactional
 public class CollectBattleLogProcessor implements ItemProcessor<PlayerToCrawl, PlayerBattleLogs> {
 
     private static final int RETENTION_DAYS = 30; // 30일 이상 된 배틀은 저장하지 않음
+    private static final int PRUNING_DAYS = 7;    // 7일 이내 전적 없으면 잠수 → 비활성화
 
     private final ClashRoyaleClient clashRoyaleClient;
     private final ObjectMapper objectMapper;
+    private final PlayerToCrawlRepository playerToCrawlRepository;
 
     @Override
     public PlayerBattleLogs process(PlayerToCrawl player) throws Exception {
@@ -96,7 +101,9 @@ public class CollectBattleLogProcessor implements ItemProcessor<PlayerToCrawl, P
         }
 
         if (polBattles.isEmpty()) {
-            log.debug("[Processor] {}: 수집할 배틀 없음 (잠수 or 전적 없음) → skip", player.getPlayerTag());
+            // 7일 이내 전적 없음 → 잠수 유저 비활성화 (Pruning)
+            playerToCrawlRepository.deactivate(player.getPlayerTag());
+            log.debug("[Processor] {}: 7일 이내 전적 없음 → is_active=false (pruned)", player.getPlayerTag());
             return null; // ItemProcessor null → Spring Batch가 자동으로 필터링
         }
 

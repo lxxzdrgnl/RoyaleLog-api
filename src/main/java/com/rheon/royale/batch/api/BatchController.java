@@ -19,6 +19,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -141,7 +142,8 @@ public class BatchController {
         }
 
         JobParametersBuilder builder = new JobParametersBuilder()
-                .addString("date", resolvedDate);
+                .addString("date", resolvedDate)
+                .addString("startTime", LocalDateTime.now().toString());
 
         if (force) {
             // COMPLETED 재실행: runId 추가 → 새 JobInstance 생성

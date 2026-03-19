@@ -5,6 +5,7 @@ import com.rheon.royale.domain.entity.PlayerToCrawl;
 import lombok.RequiredArgsConstructor;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
+import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
@@ -13,12 +14,14 @@ import org.springframework.batch.integration.async.AsyncItemWriter;
 import org.springframework.batch.item.database.JpaPagingItemReader;
 import org.springframework.batch.item.database.builder.JpaPagingItemReaderBuilder;
 import org.springframework.batch.item.support.SynchronizedItemStreamReader;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import jakarta.persistence.EntityManagerFactory;
+import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.concurrent.Future;
 
@@ -38,12 +41,12 @@ public class CollectorJobConfig {
     private final CollectBattleLogSkipListener collectBattleLogSkipListener;
 
     @Bean
-    public Job battleLogCollectorJob() {
+    public Job battleLogCollectorJob(Step collectBattleLogStep) {
         return new JobBuilder("battleLogCollectorJob", jobRepository)
                 .start(seasonIdStep())
                 .next(partitionManagerStep())
                 .next(syncRankingStep())
-                .next(collectBattleLogStep())
+                .next(collectBattleLogStep)
                 .build();
     }
 
@@ -77,10 +80,10 @@ public class CollectorJobConfig {
      *   → 429/5xx retry: ClashRoyaleClient 내부 retrySpec 처리
      */
     @Bean
-    public Step collectBattleLogStep() {
+    public Step collectBattleLogStep(SynchronizedItemStreamReader<PlayerToCrawl> synchronizedPlayerReader) {
         return new StepBuilder("collectBattleLogStep", jobRepository)
                 .<PlayerToCrawl, Future<PlayerBattleLogs>>chunk(100, transactionManager)
-                .reader(synchronizedPlayerReader())
+                .reader(synchronizedPlayerReader)
                 .processor(asyncProcessor())
                 .writer(asyncWriter())
                 .build();
@@ -108,14 +111,19 @@ public class CollectorJobConfig {
     }
 
     @Bean
-    public SynchronizedItemStreamReader<PlayerToCrawl> synchronizedPlayerReader() {
+    @StepScope
+    public SynchronizedItemStreamReader<PlayerToCrawl> synchronizedPlayerReader(
+            @Value("#{jobParameters['startTime']}") String startTime) {
         SynchronizedItemStreamReader<PlayerToCrawl> reader = new SynchronizedItemStreamReader<>();
-        reader.setDelegate(playerToCrawlReader());
+        reader.setDelegate(playerToCrawlReader(startTime));
         return reader;
     }
 
     @Bean
-    public JpaPagingItemReader<PlayerToCrawl> playerToCrawlReader() {
+    @StepScope
+    public JpaPagingItemReader<PlayerToCrawl> playerToCrawlReader(
+            @Value("#{jobParameters['startTime']}") String startTime) {
+        LocalDateTime jobStartTime = LocalDateTime.parse(startTime);
         return new JpaPagingItemReaderBuilder<PlayerToCrawl>()
                 .name("playerToCrawlReader")
                 .entityManagerFactory(entityManagerFactory)
@@ -124,9 +132,10 @@ public class CollectorJobConfig {
                 .queryString("""
                         SELECT p FROM PlayerToCrawl p
                         WHERE p.isActive = true
+                        AND (p.lastCrawledAt IS NOT NULL OR p.updatedAt < :jobStartTime)
                         ORDER BY p.lastCrawledAt ASC NULLS FIRST, p.currentRank ASC
                         """)
-                .parameterValues(Map.of())
+                .parameterValues(Map.of("jobStartTime", jobStartTime))
                 .build();
     }
 }

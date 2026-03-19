@@ -32,4 +32,9 @@ public interface PlayerToCrawlRepository extends JpaRepository<PlayerToCrawl, St
     @Modifying
     @Query("UPDATE PlayerToCrawl p SET p.lastCrawledAt = CURRENT_TIMESTAMP WHERE p.playerTag = :tag")
     void updateLastCrawledAt(@Param("tag") String tag);
+
+    /** 7일 이내 전적 없음(잠수) → 비활성화 (Pruning) */
+    @Modifying
+    @Query("UPDATE PlayerToCrawl p SET p.isActive = false, p.updatedAt = CURRENT_TIMESTAMP WHERE p.playerTag = :tag")
+    void deactivate(@Param("tag") String tag);
 }
