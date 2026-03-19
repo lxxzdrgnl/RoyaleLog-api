@@ -15,6 +15,24 @@
 
 Spring Boot 기반 메인 API 서버. 클라이언트 단일 진입점(BFF) 역할을 하며, 배틀 로그 수집(Spring Batch), 통계 조회, AI 승률 예측 위임을 담당한다.
 
+### 데이터 수집 전략: On-Demand + Batch 하이브리드
+
+```
+[배치 (Airflow 트리거 — 매일 새벽)]
+  PoL 상위 1000명 수집 → 배틀에서 만난 상대방(opponent)을 players_to_crawl에 자동 추가
+  → 매 배치마다 풀이 BFS 방식으로 확장 (1일차 1천 → 2일차 1만 → 3일차 5만)
+
+[온디맨드 (유저 검색 시 즉시)]
+  └─ DB에 수집된 랭커  → battle_log_raw 기반 즉시 응답
+  └─ DB에 없는 일반 유저 → CR API 실시간 호출 → 인메모리 분석 → 응답
+  └─ 비활성 유저 (is_active=false) → 실시간 호출 + 재활성화
+
+[향후 (Phase 2) — 유저 등급제]
+  P1 (Active, 7일 이내)  → 매일 수집
+  P2 (Normal, 8~30일)   → 3~7일 주기
+  P3 (Dormant, 30일+)   → is_active=false, 검색 시 On-Demand 재활성화
+```
+
 ---
 
 ## 기술 스택
@@ -220,49 +238,31 @@ src/main/java/com/rheon/royale/
 
 ### 플레이어 전적 조회
 ```
-GET /api/v1/players/{tag}
-
-Response:
-{
-  "success": true,
-  "data": {
-    "tag": "#ABC123",
-    "name": "플레이어명",
-    "trophies": 8500,
-    "battleLogs": [ ... ]
-  }
-}
+GET /api/v1/matches/{playerTag}
 ```
+- `#`은 `%23`으로 인코딩 (예: `%23ABC123`)
+- DB에 없는 유저: CR API 실시간 호출 + 인메모리 분석 후 반환
 - Redis TTL: **5분** (외부 API 어뷰징 방지)
 
-### 덱 메타/티어표 조회
+### 닉네임으로 플레이어 검색
 ```
-GET /api/v1/stats/tier?season=2024-01
-
-Response:
-{
-  "success": true,
-  "data": [
-    { "deckHash": "xxxx", "winRate": 0.58, "useRate": 0.12, "tier": "S" },
-    ...
-  ]
-}
+GET /api/v1/matches/search?name=닉네임
 ```
-- Redis TTL: **1시간** (stats_daily 기반, 변동성 낮음)
+- `players_to_crawl` 기반: PoL 랭커 + BFS로 발견된 상대방 포함
+- **최소 2글자** 필수 (1글자 검색은 DDoS 수준 DB 부하 유발)
+- pg_trgm GIN 인덱스로 `ILIKE '%name%'` 고속 처리
+- 최대 20건, Redis 캐싱 없음 (실시간)
 
-### AI 승률 예측
+### 덱 티어표 조회
+```
+GET /api/v1/cards/tier?battleType=pathOfLegend&days=7
+```
+- `days` 허용값: **1 / 3 / 7 / 30** (그 외는 7로 처리, 기본값: 7)
+- 기간별 Redis TTL: 1일→10분, 3일→30분, 7일/30일→1시간
+
+### AI 승률 예측 (Phase 2)
 ```
 GET /api/v1/predict/matchup?myDeck=card1,card2,...&opponentDeck=card1,card2,...
-
-Response:
-{
-  "success": true,
-  "data": {
-    "winRate": 0.63,
-    "confidence": 0.85,
-    "source": "model"   // "model" | "stats_fallback"
-  }
-}
 ```
 - FastAPI 장애 시 `source: "stats_fallback"` 으로 통계 기반 승률 반환 (Fallback)
 
@@ -270,32 +270,58 @@ Response:
 
 ## DB 스키마
 
-Flyway V1 + V2 마이그레이션 기준. ELT 4단 분리 아키텍처.
+Flyway V1~V5 마이그레이션 기준. ELT 4단 분리 아키텍처.
 
 ```
 Collector Job  →  battle_log_raw (raw_json JSONB 몰빵)
                         ↓
 Analyzer Job   →  deck_dictionary / match_features / stats_decks_daily
+                        ↓
+              stats_decks_daily_current (Rename Swap → API serving)
 ```
 
 ### V1: 수집 레이어
 
 | 테이블 | 역할 |
 |--------|------|
-| `battle_log_raw` | 원본 배틀 JSON (월별 파티션, 90일 보관) |
-| `players_to_crawl` | 수집 대상 PoL 상위 1000명 |
-| `cards` | 카드 메타 (이름, 희귀도, 타워여부) |
+| `battle_log_raw` | 원본 배틀 JSON (월별 파티션, 30일 보관) |
+| `players_to_crawl` | 수집 대상: PoL 상위 1000명 + BFS로 발견된 상대방 |
+| `cards` | 카드 메타 (이름, is_tower) |
 
 ### V2: Analyzer 레이어
 
 | 테이블 | 역할 |
 |--------|------|
 | `analyzer_meta` | 버전 관리 싱글톤 (`CHECK (id = 1)`) |
-| `deck_dictionary` | deck_hash → card_ids TEXT 정규화 |
-| `match_features` | ML Feature (월별 파티션, 90일 보관) |
-| `stats_decks_daily` | 덱별 일일 집계 역사 보관 (파티션) |
+| `deck_dictionary` | base_deck_hash → card_ids **BIGINT[]** (GIN 인덱스) |
+| `match_features` | ML Feature (월별 파티션) |
+| `stats_decks_daily` | 덱별 일일 집계 (날짜별 파티션) |
 | `stats_decks_daily_current` | API Serving 포인터 테이블 (Rename Swap 타겟) |
-| `stats_current` | VIEW → `stats_decks_daily_current` |
+
+### V3~V8: 확장
+
+| 마이그레이션 | 내용 |
+|-------------|------|
+| V3 | 타워 카드 시드 4종 (`is_tower=true`) |
+| V4 | `pg_trgm` 확장 + `players_to_crawl.name` GIN 인덱스 (닉네임 검색 고속화) |
+| V5 | `batch_skip_log` DLQ 테이블 (배치 Skip 침묵 실패 방지) |
+| V6 | `players_to_crawl.priority` 컬럼 (P1/P2/P3 등급제) |
+| V7 | priority SMALLINT → INTEGER (Hibernate 타입 매핑 정합성) |
+| V8 | 계층적 덱 해시: `refined_deck_hash` 추가, `card_ids TEXT→BIGINT[]` |
+
+#### 덱 해시 계층 구조 (V8 기준)
+
+```
+base_deck_hash  = MD5(sorted card_ids)           ← 카드 구성만 (진화 무관)
+                                                    deck_dictionary 키 / 유사덱 그룹핑 기준
+
+refined_deck_hash = MD5(sorted "id:evoLevel")    ← 진화/히어로 포함 정밀 식별
+                                                    stats_decks_daily 집계 기준 / ML 입력
+```
+
+예: 기사(evoLevel=0) vs 진화기사(evoLevel=1)
+- base: 같은 해시 → "호그 덱 전체" 통계 가능
+- refined: 다른 해시 → "진화기사 포함 여부"가 별도 승률 행으로 분리
 
 #### 주요 설계 결정
 
@@ -304,16 +330,20 @@ Analyzer Job   →  deck_dictionary / match_features / stats_decks_daily
 PRIMARY KEY (battle_id, created_at)       -- partition-aware dedup
 INDEX (created_at, analyzer_version)      -- 조회 패턴 기준 (정렬 먼저, 필터 나중)
 
--- match_features: canonical dedup 키
+-- match_features: canonical dedup 키 + 두 해시
 PRIMARY KEY (battle_id, battle_date)      -- PostgreSQL partitioned table PK 요건
-ON CONFLICT (battle_id, battle_date)      -- 앱 단에서 반드시 두 컬럼 모두 명시
+deck_hash VARCHAR(32)                     -- base hash (카드 ID만)
+refined_deck_hash VARCHAR(32)             -- refined hash (진화/히어로 포함)
 
--- deck_dictionary: card_ids 저장 방식
-card_ids TEXT NOT NULL                    -- "id1-id2-id3" (숫자 오름차순, "-" 구분)
--- BIGINT[] 미사용: B-tree 인덱스 불가, equality 느림, 정렬 보장 추적 어려움
+-- deck_dictionary: BIGINT[] + GIN 인덱스 (V8에서 TEXT → BIGINT[] 변경)
+card_ids BIGINT[] NOT NULL
+INDEX USING GIN (card_ids)               -- @> (포함), && (교집합) 연산자 고속 지원
+-- 사용 예: WHERE card_ids @> ARRAY[26000000]::bigint[] (특정 카드 포함 덱)
 
 -- stats_decks_daily_current: Rename Swap (VIEW가 아닌 포인터 테이블)
 -- VIEW는 swap 중 dirty read 가능 → RENAME = 카탈로그 레벨 원자 연산
+-- deck_hash = refined_deck_hash (집계 기준)
+-- base_deck_hash = 유사덱 그룹핑용 별도 컬럼
 ```
 
 ---
@@ -321,9 +351,10 @@ card_ids TEXT NOT NULL                    -- "id1-id2-id3" (숫자 오름차순,
 ## Spring Batch 파이프라인
 
 ```
-[Airflow Trigger — 매일 새벽]
-     │
-     ▼
+[Airflow Trigger — 수집 주기는 유저 등급에 따라 차등 (Phase 2 적용 예정)]
+  현재: 매일 새벽 1회 (전체 is_active 유저)
+  예정: P1(Active) → 1일 주기 / P2(Normal) → 3~7일 주기 / P3(Dormant) → 제외
+
 CollectorJob (4 Steps)
   ├── Step 0: PartitionManagerTasklet
   │           - 당월 + 익월 파티션 생성 (IF NOT EXISTS)
@@ -336,25 +367,22 @@ CollectorJob (4 Steps)
   │           - GET /pathoflegend/{seasonId}/rankings → players_to_crawl UPSERT
   │
   └── Step 3: CollectBattleLogStep (Chunk 10)
-              Reader    : players_to_crawl (JdbcPagingItemReader)
+              Reader    : players_to_crawl (is_active=true)
               Processor : ClashRoyaleClient 호출, pathOfLegend 필터, battle_id 생성
+                          ※ opponentTag + opponentName 추출 (BFS 확장)
               Writer    : battle_log_raw INSERT (ON CONFLICT DO NOTHING)
+                          + discoveredOpponents → players_to_crawl UPSERT (batchUpdate)
               FaultTolerant: Retry(3) + ExponentialBackOff / Skip(50)
+              SkipListener: batch_skip_log DLQ 기록
 
-[Airflow Trigger — Collector 완료 후]
-     │
-     ▼
-AnalyzerJob (2 Steps)
+AnalyzerJob (Collector 완료 후 실행)
   ├── Step 1: DeckAnalyzerStep (Chunk 50)
-  │           Reader    : BattleLogRaw WHERE analyzerVersion < currentVersion (DB 조회)
-  │           Processor : raw_json 파싱 → deck_hash(MD5) 생성 → AnalyzedBattle
+  │           Reader    : BattleLogRaw WHERE analyzerVersion < currentVersion
+  │           Processor : raw_json 파싱 → deck_hash(MD5) 생성
   │           Writer    : deck_dictionary UPSERT + match_features UPSERT
-  │                       + battle_log_raw.analyzer_version 갱신
   │
   └── Step 2: StatsOverwriteStep (Tasklet)
-              match_features 전체 집계 → stats_new 생성
-              Rename Swap: stats_decks_daily_current → stats_old → stats_new → current
-              DROP stats_old
+              stats_decks_daily 집계 → Rename Swap → stats_decks_daily_current
 ```
 
 ---
@@ -362,8 +390,13 @@ AnalyzerJob (2 Steps)
 ## Redis 캐싱 전략
 
 ```java
-// 티어표: 1시간
-@Cacheable(value = "tierList", key = "#season")
+// 티어표: 기간별 TTL 차등
+@Caching(cacheable = {
+    @Cacheable(value = "tierList_1",  key = "#battleType", condition = "#days == 1"),   // 10분
+    @Cacheable(value = "tierList_3",  key = "#battleType", condition = "#days == 3"),   // 30분
+    @Cacheable(value = "tierList_7",  key = "#battleType", condition = "#days == 7"),   // 1시간
+    @Cacheable(value = "tierList_30", key = "#battleType", condition = "#days == 30")   // 1시간
+})
 
 // 유저 전적: 5분
 @Cacheable(value = "playerBattleLog", key = "#tag")

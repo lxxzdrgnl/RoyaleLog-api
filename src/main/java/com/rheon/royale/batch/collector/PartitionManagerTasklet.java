@@ -42,6 +42,8 @@ public class PartitionManagerTasklet implements Tasklet {
         LocalDate today = LocalDate.now();
 
         for (String table : PARTITIONED_TABLES) {
+            createPartitionIfAbsent(table, today.minusMonths(2)); // 2달 전 (월초 엣지케이스: 30일 전이 전전달일 수 있음)
+            createPartitionIfAbsent(table, today.minusMonths(1));
             createPartitionIfAbsent(table, today);
             createPartitionIfAbsent(table, today.plusMonths(1));
             dropOldPartitionIfExists(table, today.minusMonths(3));

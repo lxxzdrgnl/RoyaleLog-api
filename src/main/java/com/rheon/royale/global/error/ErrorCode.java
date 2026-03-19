@@ -23,6 +23,7 @@ public enum ErrorCode {
     PLAYER_NOT_FOUND(HttpStatus.NOT_FOUND, "M001", "플레이어를 찾을 수 없습니다."),
     INVALID_PLAYER_TAG(HttpStatus.BAD_REQUEST, "M002", "올바르지 않은 플레이어 태그 형식입니다."),
     DUPLICATE_PLAYER(HttpStatus.CONFLICT, "M003", "이미 등록된 플레이어입니다."),
+    SEARCH_QUERY_TOO_SHORT(HttpStatus.BAD_REQUEST, "M004", "검색어는 최소 2글자 이상 입력해주세요."),
 
     // Card / Stats (S)
     STATS_NOT_FOUND(HttpStatus.NOT_FOUND, "S001", "해당 시즌의 통계 데이터가 없습니다."),

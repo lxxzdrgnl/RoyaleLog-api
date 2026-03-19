@@ -4,6 +4,7 @@ import com.rheon.royale.batch.collector.dto.PlayerBattleLogs;
 import com.rheon.royale.domain.entity.PlayerToCrawl;
 import com.rheon.royale.global.error.BusinessException;
 import com.rheon.royale.global.error.ErrorCode;
+import org.springframework.dao.DataIntegrityViolationException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
@@ -32,6 +33,7 @@ public class CollectorJobConfig {
     private final SyncRankingTasklet syncRankingTasklet;
     private final CollectBattleLogProcessor collectBattleLogProcessor;
     private final CollectBattleLogWriter collectBattleLogWriter;
+    private final CollectBattleLogSkipListener collectBattleLogSkipListener;
 
     @Bean
     public Job battleLogCollectorJob() {
@@ -81,7 +83,9 @@ public class CollectorJobConfig {
                 .retryLimit(3)
                 .retry(BusinessException.class)  // RATE_LIMIT / API_ERROR → ClashRoyaleClient retrySpec 처리
                 .skipLimit(50)
-                .skip(BusinessException.class)   // PLAYER_NOT_FOUND(404) 등 개별 실패는 Skip
+                .skip(BusinessException.class)              // PLAYER_NOT_FOUND(404) 등 개별 실패는 Skip
+                .skip(DataIntegrityViolationException.class) // 파티션 없음 등 DB 제약 에러 → Job 전체 죽이지 않도록
+                .listener(collectBattleLogSkipListener)      // Skip 발생 시 DLQ 적재 (침묵 실패 방지)
                 .build();
     }
 

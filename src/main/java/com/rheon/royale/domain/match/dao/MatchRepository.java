@@ -8,6 +8,7 @@ import com.rheon.royale.domain.entity.BattleLogRaw;
 import com.rheon.royale.domain.entity.BattleLogRawId;
 import com.rheon.royale.domain.match.application.OnDemandMatchService;
 import com.rheon.royale.domain.match.dto.BattleEntry;
+import com.rheon.royale.domain.match.dto.PlayerSearchResult;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -84,6 +85,26 @@ public class MatchRepository {
             }
         }
         return entries;
+    }
+
+    /**
+     * 닉네임 검색 — pg_trgm GIN 인덱스 활용 (ILIKE '%name%' 양방향)
+     * currentRank IS NULL → 상대방 발견으로 추가된 유저 (PoL 랭커 아님)
+     */
+    public List<PlayerSearchResult> searchByName(String name) {
+        return jdbcTemplate.query("""
+                SELECT player_tag, name, current_rank
+                FROM players_to_crawl
+                WHERE name ILIKE ?
+                ORDER BY current_rank ASC NULLS LAST
+                LIMIT 20
+                """,
+                (rs, rowNum) -> new PlayerSearchResult(
+                        rs.getString("player_tag"),
+                        rs.getString("name"),
+                        (Integer) rs.getObject("current_rank")
+                ),
+                "%" + name + "%");
     }
 
     public boolean existsByPlayerTag(String playerTag) {

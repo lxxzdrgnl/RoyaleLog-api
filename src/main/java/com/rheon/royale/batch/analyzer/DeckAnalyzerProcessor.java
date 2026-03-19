@@ -55,8 +55,10 @@ public class DeckAnalyzerProcessor implements ItemProcessor<BattleLogRaw, Analyz
                 battle.getId().getCreatedAt().toLocalDate(),
                 battle.getBattleType(),
                 teamInfo.deckHash(),
+                teamInfo.refinedDeckHash(),
                 teamInfo.cardIds(),
                 opponentInfo.deckHash(),
+                opponentInfo.refinedDeckHash(),
                 opponentInfo.cardIds(),
                 result,
                 teamInfo.avgLevel(),
@@ -69,13 +71,17 @@ public class DeckAnalyzerProcessor implements ItemProcessor<BattleLogRaw, Analyz
         if (cardsNode.isEmpty()) return null;
 
         List<Long> deckCardIds = new ArrayList<>();
+        List<String> refinedPairs = new ArrayList<>(); // "id:evoLevel"
         int totalLevel = 0;
         int evolutionCount = 0;
 
         for (JsonNode card : cardsNode) {
-            deckCardIds.add(card.path("id").asLong());
+            long id = card.path("id").asLong();
+            int evoLevel = card.path("evolutionLevel").asInt(0);
+            deckCardIds.add(id);
+            refinedPairs.add(id + ":" + evoLevel);
             totalLevel += card.path("level").asInt(1);
-            if (card.path("evolutionLevel").asInt(0) > 0) evolutionCount++;
+            if (evoLevel > 0) evolutionCount++;
         }
 
         if (deckCardIds.size() < 8) return null;
@@ -83,13 +89,15 @@ public class DeckAnalyzerProcessor implements ItemProcessor<BattleLogRaw, Analyz
         JsonNode supportCards = player.path("supportCards");
         Long towerCardId = supportCards.isEmpty() ? null : supportCards.get(0).path("id").asLong();
 
-        String deckHash = DeckHashUtils.deckHash(deckCardIds, towerCardId);
-        Long[] sortedCardIds = DeckHashUtils.sortedCardIds(deckCardIds, towerCardId);
-        BigDecimal avgLevel = BigDecimal.valueOf(totalLevel)
+        String deckHash        = DeckHashUtils.deckHash(deckCardIds, towerCardId);
+        String refinedDeckHash = DeckHashUtils.refinedDeckHash(refinedPairs, towerCardId);
+        Long[] sortedCardIds   = DeckHashUtils.sortedCardIds(deckCardIds, towerCardId);
+        BigDecimal avgLevel    = BigDecimal.valueOf(totalLevel)
                 .divide(BigDecimal.valueOf(deckCardIds.size()), 2, RoundingMode.HALF_UP);
 
-        return new DeckInfo(deckHash, sortedCardIds, avgLevel, evolutionCount);
+        return new DeckInfo(deckHash, refinedDeckHash, sortedCardIds, avgLevel, evolutionCount);
     }
 
-    private record DeckInfo(String deckHash, Long[] cardIds, BigDecimal avgLevel, int evolutionCount) {}
+    private record DeckInfo(String deckHash, String refinedDeckHash, Long[] cardIds,
+                            BigDecimal avgLevel, int evolutionCount) {}
 }

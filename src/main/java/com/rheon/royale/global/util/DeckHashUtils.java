@@ -4,43 +4,67 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * 덱 해시 유틸리티
  *
- * 핵심 원칙: "deck identity" vs "deck state" 분리
- *   - deck_hash: card_id 기반 (level/evolution 미포함) → 같은 덱 구성이면 항상 동일한 해시
- *   - deck state (has_evolution, avg_level 등): 별도 컬럼에 저장
+ * 해시 2종 설계:
+ *   - base_deck_hash  = MD5(sorted card_ids; 구분자)
+ *     카드 구성만 (레벨/진화 무관) → deck_dictionary 키 / 유사덱 그룹핑 기준
+ *   - refined_deck_hash = MD5(sorted "id:evoLevel"; 구분자)
+ *     진화/히어로 포함 정밀 식별 → stats 집계 기준 / ML 입력
  *
- * 이유: level 포함 시 같은 덱이 플레이어마다 다른 hash → 통계 분산, 의미 없는 데이터
+ * 구분자 통일: ";" — 두 해시 모두 동일
+ * 정렬 기준: 항상 숫자 오름차순 (Long::compareTo) — 문자열 정렬 사용 금지
+ *   이유: "159000000" < "26000000" (문자열 기준) ≠ 159000000 > 26000000 (숫자 기준)
+ *   타워 카드(~159000000)와 일반 카드(~26000000) 혼재 시 해시 불일치 버그 발생
  */
 public final class DeckHashUtils {
 
     private DeckHashUtils() {}
 
     /**
-     * 덱 해시 생성
-     * MD5( 정렬된(8 deck card_ids + 1 tower card_id) )
+     * Base 덱 해시 — 카드 ID만 (진화/레벨 무관)
+     * MD5( 숫자 오름차순 정렬된 "id1;id2;...;idN" )
      *
      * @param deckCardIds  8장의 덱 카드 api_id 목록
-     * @param towerCardId  타워 카드 api_id (supportCards[0])
-     */
-    /**
-     * 구분자: "-" (숫자 ID 사이 "-" 사용 → 공백/언더스코어보다 가독성 높고 ambiguity 없음)
-     * 정렬: Long.compareTo() — 숫자 오름차순 (lexicographic 정렬과 다름, 예: 9 < 11)
-     * 결과 예: "26000000-26000001-26000048-..."
+     * @param towerCardId  타워 카드 api_id (supportCards[0], null 허용)
      */
     public static String deckHash(List<Long> deckCardIds, Long towerCardId) {
         List<Long> all = new ArrayList<>(deckCardIds);
-        if (towerCardId != null) {
-            all.add(towerCardId);
-        }
-        // Long::compareTo → 숫자 오름차순 (not lexicographic)
+        if (towerCardId != null) all.add(towerCardId);
         String key = all.stream()
-                .sorted(Long::compareTo)
+                .sorted(Long::compareTo)          // 숫자 오름차순 (not lexicographic)
                 .map(String::valueOf)
-                .reduce("", (a, b) -> a.isEmpty() ? b : a + "-" + b);
+                .collect(Collectors.joining(";"));
+        return md5(key);
+    }
+
+    /**
+     * Refined 덱 해시 — 진화/히어로 인식 정밀 해시
+     * MD5( 숫자 기준 정렬된 "id1:evo1;id2:evo2;...;towerid:0" )
+     *
+     * 왜 offset(+10_000_000) 방식이 아닌가:
+     *   - 숫자 오버플로우 / 다른 카드 ID와 충돌 가능성
+     *   - "id:evoLevel" 문자열 페어가 의미상 명확하고 충돌 불가
+     *
+     * 왜 문자열 정렬이 아닌 숫자 정렬인가:
+     *   - "159000000:0" < "26000000:0" (문자열 기준) → 타워 카드 포함 시 정렬 역전 버그
+     *   - ID 파트를 Long으로 파싱하여 숫자 기준으로 정렬
+     *
+     * @param refinedPairs  각 카드의 "id:evoLevel" 문자열 목록 (8장)
+     * @param towerCardId   타워 카드 api_id (null 허용)
+     */
+    public static String refinedDeckHash(List<String> refinedPairs, Long towerCardId) {
+        List<String> all = new ArrayList<>(refinedPairs);
+        if (towerCardId != null) all.add(towerCardId + ":0");
+        String key = all.stream()
+                .sorted(Comparator.comparingLong(
+                        (String s) -> Long.parseLong(s.split(":")[0])))  // 숫자 기준 정렬
+                .collect(Collectors.joining(";"));
         return md5(key);
     }
 

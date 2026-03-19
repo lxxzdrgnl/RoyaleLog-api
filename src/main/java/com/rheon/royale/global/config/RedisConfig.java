@@ -48,7 +48,11 @@ public class RedisConfig {
                 .disableCachingNullValues();
 
         Map<String, RedisCacheConfiguration> cacheConfigs = Map.of(
-                "tierList", defaultConfig.entryTtl(Duration.ofSeconds(tierListTtl)),
+                "tierList",        defaultConfig.entryTtl(Duration.ofSeconds(tierListTtl)),
+                "tierList_1",      defaultConfig.entryTtl(Duration.ofMinutes(10)),
+                "tierList_3",      defaultConfig.entryTtl(Duration.ofMinutes(30)),
+                "tierList_7",      defaultConfig.entryTtl(Duration.ofHours(1)),
+                "tierList_30",     defaultConfig.entryTtl(Duration.ofHours(1)),
                 "playerBattleLog", defaultConfig.entryTtl(Duration.ofSeconds(playerBattleLogTtl))
         );
 

@@ -2,8 +2,10 @@ package com.rheon.royale.domain.match.application;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.rheon.royale.batch.analyzer.DeckAnalyzerProcessor;
 import com.rheon.royale.batch.analyzer.dto.AnalyzedBattle;
+import com.rheon.royale.domain.card.application.CardMetaCache;
 import com.rheon.royale.domain.entity.BattleLogRaw;
 import com.rheon.royale.domain.entity.BattleLogRawId;
 import com.rheon.royale.domain.match.dto.BattleEntry;
@@ -14,38 +16,66 @@ import com.rheon.royale.infrastructure.external.clashroyale.ClashRoyaleClient;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.sql.Timestamp;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.OptionalDouble;
 
 /**
- * 일반 유저 온디맨드 전적 조회
+ * 온디맨드 전적 조회 — DB 미수집 유저 또는 일반 유저 검색 시
  *
  * [설계 원칙]
- *   - battle_log_raw / match_features 에 쓰지 않는다.
- *     → 야간 Analyzer Job 이 랭커 데이터만 집계하도록 오염 방지
- *   - Clash API → 인메모리 분석 → Redis 캐시(5분) 만 사용
+ *   - Clash API → 인메모리 분석 → battle_log_raw 저장 → Redis 캐시(5분)
+ *   - battle_log_raw에 저장함으로써 해당 유저를 다음 배치 수집 대상으로 자동 편입
+ *   - players_to_crawl UPSERT: 검색된 유저를 BFS 풀에 즉시 추가
+ *
+ * [이전 설계와의 차이]
+ *   - 이전: "랭커 데이터 오염 방지"를 위해 저장 안 함 (PoL 1000명 고정 시대)
+ *   - 현재: BFS 확장 전략으로 수집 대상이 전체 유저로 확대됨 → 저장이 맞음
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class OnDemandMatchService {
 
+    private static final int RETENTION_DAYS = 30;
+
+    private static final String INSERT_BATTLE_SQL = """
+            INSERT INTO battle_log_raw (battle_id, player_tag, battle_type, raw_json, created_at)
+            VALUES (?, ?, ?, CAST(? AS jsonb), ?)
+            ON CONFLICT (battle_id, created_at) DO NOTHING
+            """;
+
+    private static final String UPSERT_PLAYER_SQL = """
+            INSERT INTO players_to_crawl (player_tag, name, is_active, updated_at)
+            VALUES (?, ?, true, NOW())
+            ON CONFLICT (player_tag) DO UPDATE
+                SET name       = COALESCE(EXCLUDED.name, players_to_crawl.name),
+                    is_active  = true,
+                    updated_at = NOW()
+            """;
+
     private final ClashRoyaleClient clashRoyaleClient;
     private final DeckAnalyzerProcessor deckAnalyzerProcessor;
     private final ObjectMapper objectMapper;
+    private final JdbcTemplate jdbcTemplate;
+    private final CardMetaCache cardMetaCache;
 
     @Cacheable(value = "playerBattleLog", key = "'matches:' + #normalizedTag")
     public List<BattleEntry> fetchAndAnalyze(String normalizedTag) {
-        log.info("[OnDemand] {} — DB 미수집, Clash API 실시간 분석", normalizedTag);
+        log.info("[OnDemand] {} — Clash API 실시간 조회 시작", normalizedTag);
 
         String rawJson = clashRoyaleClient.getBattleLog(normalizedTag);
         List<BattleEntry> result = new ArrayList<>();
+        List<Object[]> battleArgs = new ArrayList<>();
+        String playerName = null;
 
         try {
             JsonNode battles = objectMapper.readTree(rawJson);
@@ -67,6 +97,23 @@ public class OnDemandMatchService {
                 var    createdAt   = BattleHashUtils.parseBattleTime(battleTime);
                 String battleType  = battle.path("type").asText(null);
                 String gameMode    = battle.path("gameMode").path("name").asText(null);
+
+                // 유저 이름 첫 배틀에서 추출
+                if (playerName == null) {
+                    playerName = teamPlayer.path("name").asText(null);
+                }
+
+                // 30일 이상 된 배틀은 파티션 없음 → 저장 및 분석 skip
+                if (createdAt.isBefore(LocalDateTime.now().minusDays(RETENTION_DAYS))) {
+                    continue;
+                }
+
+                // battle_log_raw 저장 대상 누적 — batch와 동일하게 pruned JSON 저장
+                String prunedJson = pruneForStorage((ObjectNode) battle.deepCopy());
+                battleArgs.add(new Object[]{
+                        battleId, normalizedTag, battleType, prunedJson,
+                        Timestamp.valueOf(createdAt)
+                });
 
                 BattleLogRaw raw = BattleLogRaw.builder()
                         .id(new BattleLogRawId(battleId, createdAt))
@@ -94,7 +141,22 @@ public class OnDemandMatchService {
             log.warn("[OnDemand] {} 분석 중 오류: {}", normalizedTag, e.getMessage());
         }
 
-        log.info("[OnDemand] {} — {}건 분석 완료", normalizedTag, result.size());
+        // battle_log_raw 저장 + players_to_crawl 등록 (다음 배치부터 자동 수집 대상)
+        if (!battleArgs.isEmpty()) {
+            jdbcTemplate.batchUpdate(INSERT_BATTLE_SQL, battleArgs, battleArgs.size(),
+                    (ps, args) -> {
+                        ps.setString(1, (String) args[0]);
+                        ps.setString(2, (String) args[1]);
+                        ps.setString(3, (String) args[2]);
+                        ps.setString(4, (String) args[3]);
+                        ps.setTimestamp(5, (Timestamp) args[4]);
+                    });
+
+            jdbcTemplate.update(UPSERT_PLAYER_SQL, normalizedTag, playerName);
+            log.info("[OnDemand] {} ({}) — {}건 저장, players_to_crawl 편입",
+                    normalizedTag, playerName, battleArgs.size());
+        }
+
         return result;
     }
 
@@ -146,14 +208,19 @@ public class OnDemandMatchService {
     private List<CardInfo> parseCards(JsonNode cardsNode) {
         List<CardInfo> cards = new ArrayList<>();
         for (JsonNode card : cardsNode) {
-            cards.add(new CardInfo(
-                    card.path("id").asLong(),
-                    card.path("name").asText(null),
-                    card.path("iconUrls").path("medium").asText(null),
+            long id = card.path("id").asLong();
+            String name = card.path("name").asText(null);
+
+            // batch pruned JSON에서 name이 없으면 cards 테이블에서 보완 (iconUrl은 프론트 내부 에셋 처리)
+            if (name == null) {
+                CardMetaCache.CardMeta meta = cardMetaCache.get(id);
+                if (meta != null) name = meta.name();
+            }
+
+            cards.add(new CardInfo(id, name, null,
                     card.path("level").asInt(0),
                     card.path("evolutionLevel").asInt(0),
-                    card.path("elixirCost").asInt(0)
-            ));
+                    card.path("elixirCost").asInt(0)));
         }
         return cards;
     }
@@ -161,12 +228,46 @@ public class OnDemandMatchService {
     private CardInfo parseTowerCard(JsonNode supportCards) {
         if (supportCards.isEmpty()) return null;
         JsonNode card = supportCards.get(0);
-        return new CardInfo(
-                card.path("id").asLong(),
-                card.path("name").asText(null),
-                card.path("iconUrls").path("medium").asText(null),
-                card.path("level").asInt(0),
-                0, 0
-        );
+        long id = card.path("id").asLong();
+        String name = card.path("name").asText(null);
+
+        if (name == null) {
+            CardMetaCache.CardMeta meta = cardMetaCache.get(id);
+            if (meta != null) name = meta.name();
+        }
+
+        return new CardInfo(id, name, null, card.path("level").asInt(0), 0, 0);
+    }
+
+    /**
+     * battle_log_raw 저장용 JSON 경량화 — batch CollectBattleLogProcessor와 동일 규칙
+     *
+     * 제거: deckSelection, isHostedMatch, isLadderTournament (battle), globalRank (player),
+     *       name, iconUrls, rarity, maxLevel, maxEvolutionLevel, starLevel (card)
+     */
+    private String pruneForStorage(ObjectNode battle) {
+        battle.remove(java.util.List.of("deckSelection", "isHostedMatch", "isLadderTournament"));
+        for (String side : java.util.List.of("team", "opponent")) {
+            JsonNode sideNode = battle.path(side);
+            for (JsonNode playerNode : sideNode) {
+                ObjectNode p = (ObjectNode) playerNode;
+                p.remove("globalRank");
+                pruneCards(p.path("cards"));
+                pruneCards(p.path("supportCards"));
+            }
+        }
+        return battle.toString();
+    }
+
+    private void pruneCards(JsonNode cardsNode) {
+        for (JsonNode cardNode : cardsNode) {
+            ObjectNode card = (ObjectNode) cardNode;
+            card.remove("name");
+            card.remove("iconUrls");
+            card.remove("rarity");
+            card.remove("maxLevel");
+            card.remove("maxEvolutionLevel");
+            card.remove("starLevel");
+        }
     }
 }

@@ -2,6 +2,7 @@ package com.rheon.royale.domain.match.api;
 
 import com.rheon.royale.domain.match.application.MatchService;
 import com.rheon.royale.domain.match.dto.PlayerBattlesResponse;
+import com.rheon.royale.domain.match.dto.PlayerSearchResult;
 import com.rheon.royale.global.error.ApiResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -16,6 +17,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
+
 @Tag(name = "Match", description = "플레이어 전적 조회")
 @RestController
 @RequestMapping("/api/v1/matches")
@@ -23,6 +26,27 @@ import org.springframework.web.bind.annotation.RestController;
 public class MatchController {
 
     private final MatchService matchService;
+
+    @Operation(
+            summary = "닉네임으로 플레이어 검색",
+            description = """
+                    닉네임 일부로 플레이어를 검색합니다. (최대 20건)
+
+                    - `players_to_crawl` 기반: PoL 상위 랭커 + 배틀에서 발견된 상대방 포함
+                    - `currentRank` = null 이면 PoL 비랭커 (상대방 발견으로 추가된 유저)
+                    - 대소문자 무시 (ILIKE), pg_trgm 인덱스로 고속 처리
+                    """
+    )
+    @GetMapping("/search")
+    public ApiResponse<List<PlayerSearchResult>> searchPlayers(
+            @Parameter(description = "검색할 닉네임 (부분 일치, 최소 2글자)", example = "KingSlayer")
+            @RequestParam String name) {
+        if (name == null || name.trim().length() < 2) {
+            throw new com.rheon.royale.global.error.BusinessException(
+                    com.rheon.royale.global.error.ErrorCode.SEARCH_QUERY_TOO_SHORT);
+        }
+        return ApiResponse.ok(matchService.searchByName(name.trim()));
+    }
 
     @Operation(
             summary = "플레이어 배틀 로그 조회",

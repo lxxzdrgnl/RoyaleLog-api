@@ -27,6 +27,14 @@ public class ClashRoyaleClient {
     private final ClashRoyaleProperties props;
 
     private WebClient webClient;
+    /**
+     * [아키텍처 제약] Rate Limiting — 현재 로컬 synchronized 방식
+     *
+     * 현재: 단일 파드 환경이므로 로컬 synchronized로 충분
+     * 미래: K3s에서 파드 2개 이상 Scale-out 시 글로벌 Rate Limit 필요
+     *       → Redis Bucket4j 또는 Airflow Task Concurrency=1로 교체해야 함
+     *       → 미교체 시 파드 A+B 합산 요청이 API 한도 초과 → IP 밴 위험
+     */
     private long intervalMs;          // 요청 간 최소 간격 (ms)
     private long lastCallTime = 0L;
 

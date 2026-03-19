@@ -16,12 +16,15 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Set;
 
 @Tag(name = "Card", description = "카드 메타 및 덱 티어표")
 @RestController
 @RequestMapping("/api/v1/cards")
 @RequiredArgsConstructor
 public class CardController {
+
+    private static final Set<Integer> ALLOWED_DAYS = Set.of(1, 3, 7, 30);
 
     private final CardService cardService;
 
@@ -32,7 +35,8 @@ public class CardController {
 
                     - 표본 **10건 미만** 덱은 제외됩니다 (신뢰도 보장)
                     - `winRate`: 0.0 ~ 100.0 (%)
-                    - Redis TTL: **1시간**
+                    - `days` 허용값: 1 / 3 / 7 / 30 (그 외는 7로 처리)
+                    - 기간별 Redis TTL: 1일→10분, 3일→30분, 7일/30일→1시간
                     """
     )
     @ApiResponses({
@@ -50,8 +54,9 @@ public class CardController {
             @Parameter(description = "배틀 타입", example = "pathOfLegend")
             @RequestParam(defaultValue = "pathOfLegend") String battleType,
 
-            @Parameter(description = "집계 기간 (일)", example = "30")
-            @RequestParam(defaultValue = "30") int days) {
-        return ApiResponse.ok(cardService.getTierList(battleType, days));
+            @Parameter(description = "집계 기간 (일, 허용값: 1/3/7/30)", example = "7")
+            @RequestParam(defaultValue = "7") int days) {
+        int validDays = ALLOWED_DAYS.contains(days) ? days : 7;
+        return ApiResponse.ok(cardService.getTierList(battleType, validDays));
     }
 }

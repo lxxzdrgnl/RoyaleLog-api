@@ -11,8 +11,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.Date;
 import java.sql.Timestamp;
-import java.util.Arrays;
-import java.util.stream.Collectors;
 
 @Slf4j
 @Component
@@ -37,30 +35,26 @@ public class DeckAnalyzerWriter implements ItemWriter<AnalyzedBattle> {
 
     /**
      * deck_dictionary: ON CONFLICT DO UPDATE (mutable)
-     *   - DO NOTHING은 로직 변경 후 재처리 시 card_ids 갱신 불가 → 위험
-     *   - DO UPDATE: 새 card_ids 로 덮어쓰기 → 분석 로직 변경에 유연
-     *   - Race Condition 방어: DB unique constraint (PRIMARY KEY) 가 책임짐
-     *   - card_ids TEXT: "id1-id2-id3" (숫자 오름차순, DeckHashUtils 직렬화 규칙과 동일)
-     *     BIGINT[] 미사용 이유: B-tree 인덱스 불가, equality 느림, 정렬 보장 추적 어려움
+     *   - 키: base deck_hash (카드 ID만, 진화 무관) → "같은 구성" 덱 단위 조회용
+     *   - card_ids: BIGINT[] — GIN 인덱스로 특정 카드 포함 덱 O(1) 조회 가능
+     *     ex) WHERE card_ids @> ARRAY[26000000]::bigint[]
+     *   - 왜 이전 TEXT에서 BIGINT[]로 바꿨나:
+     *     TEXT("id1-id2-id3")는 LIKE 검색 불가 + GIN 인덱스 부적합
+     *     BIGINT[]는 GIN 인덱스 완벽 지원 + && (교집합) 연산자로 유사덱 쿼리 가능
      */
     private void upsertDeckDictionary(String deckHash, Long[] cardIds) {
         if (deckHash == null || cardIds == null) return;
-        jdbcTemplate.update("""
-                INSERT INTO deck_dictionary (deck_hash, card_ids)
-                VALUES (?, ?)
-                ON CONFLICT (deck_hash)
-                DO UPDATE SET card_ids = EXCLUDED.card_ids
-                """,
-                deckHash,
-                toCardIdsText(cardIds));
-    }
-
-    /** card_ids 배열 → TEXT 직렬화 (숫자 오름차순, "-" 구분자) */
-    private static String toCardIdsText(Long[] cardIds) {
-        return Arrays.stream(cardIds)
-                .sorted(Long::compareTo)
-                .map(String::valueOf)
-                .collect(Collectors.joining("-"));
+        jdbcTemplate.update(conn -> {
+            var ps = conn.prepareStatement("""
+                    INSERT INTO deck_dictionary (deck_hash, card_ids)
+                    VALUES (?, ?)
+                    ON CONFLICT (deck_hash)
+                    DO UPDATE SET card_ids = EXCLUDED.card_ids
+                    """);
+            ps.setString(1, deckHash);
+            ps.setArray(2, conn.createArrayOf("bigint", cardIds));
+            return ps;
+        });
     }
 
     /**
@@ -74,22 +68,27 @@ public class DeckAnalyzerWriter implements ItemWriter<AnalyzedBattle> {
     private void insertMatchFeature(AnalyzedBattle battle) {
         jdbcTemplate.update("""
                 INSERT INTO match_features
-                    (battle_id, deck_hash, opponent_hash, battle_type,
-                     battle_date, avg_level, evolution_count, result, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+                    (battle_id, deck_hash, refined_deck_hash,
+                     opponent_hash, refined_opponent_hash,
+                     battle_type, battle_date, avg_level, evolution_count, result, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
                 ON CONFLICT (battle_id, battle_date)
                 DO UPDATE SET
-                    deck_hash       = EXCLUDED.deck_hash,
-                    opponent_hash   = EXCLUDED.opponent_hash,
-                    avg_level       = EXCLUDED.avg_level,
-                    evolution_count = EXCLUDED.evolution_count,
-                    result          = EXCLUDED.result,
-                    updated_at      = NOW()
+                    deck_hash             = EXCLUDED.deck_hash,
+                    refined_deck_hash     = EXCLUDED.refined_deck_hash,
+                    opponent_hash         = EXCLUDED.opponent_hash,
+                    refined_opponent_hash = EXCLUDED.refined_opponent_hash,
+                    avg_level             = EXCLUDED.avg_level,
+                    evolution_count       = EXCLUDED.evolution_count,
+                    result                = EXCLUDED.result,
+                    updated_at            = NOW()
                 WHERE match_features.updated_at < EXCLUDED.updated_at
                 """,
                 battle.battleId(),
                 battle.deckHash(),
+                battle.refinedDeckHash(),
                 battle.opponentHash(),
+                battle.refinedOpponentHash(),
                 battle.battleType(),
                 Date.valueOf(battle.battleDate()),
                 battle.avgLevel(),
