@@ -1,0 +1,10 @@
+cors:
+  allowed-origins:
+    - http://localhost:5173
+    - http://localhost:3000
+spring:
+  jpa:
+    show-sql: true
+logging:
+  level:
+    com.rheon.royale: DEBUG

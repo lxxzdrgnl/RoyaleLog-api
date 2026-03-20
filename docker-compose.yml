@@ -8,6 +8,7 @@ services:
       POSTGRES_DB: ${DB_NAME:-royalelog}
       POSTGRES_USER: ${DB_USER:-royale}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
+    shm_size: '2gb'
     volumes:
       - postgres-data:/var/lib/postgresql/data
     ports:
@@ -30,10 +31,10 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Spring Boot API ───────────────────────────────────────────────
+  # ── API Server (port 8080) ─────────────────────────────────────────
   api:
     build:
-      context: .
+      context: ./api
       dockerfile: Dockerfile
     container_name: royalelog-api
     env_file: .env
@@ -42,6 +43,24 @@ services:
       REDIS_HOST: redis
     ports:
       - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── Batch Server (port 8081) ───────────────────────────────────────
+  batch:
+    build:
+      context: ./batch
+      dockerfile: Dockerfile
+    container_name: royalelog-batch
+    env_file: .env
+    environment:
+      DB_HOST: postgres
+      REDIS_HOST: redis
+    ports:
+      - "8081:8081"
     depends_on:
       postgres:
         condition: service_healthy

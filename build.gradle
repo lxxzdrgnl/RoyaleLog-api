@@ -1,86 +1,34 @@
 plugins {
-    id 'java'
-    id 'org.springframework.boot' version '3.2.5'
-    id 'io.spring.dependency-management' version '1.1.4'
+    id 'io.spring.dependency-management' version '1.1.4' apply false
+    id 'org.springframework.boot'        version '3.2.5' apply false
 }
 
-group = 'com.rheon'
-version = '1.0-SNAPSHOT'
+subprojects {
+    apply plugin: 'java'
+    apply plugin: 'io.spring.dependency-management'
 
-java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
-        vendor = JvmVendorSpec.AMAZON
-    }
-}
+    group   = 'com.rheon'
+    version = '1.0-SNAPSHOT'
 
-repositories {
-    mavenCentral()
-}
-
-dependencies {
-    // 1. Web
-    implementation 'org.springframework.boot:spring-boot-starter-web'
-    implementation 'org.springframework.boot:spring-boot-starter-validation'
-    implementation 'org.springframework.boot:spring-boot-starter-webflux'   // WebClient (ML 서버 통신)
-
-    // 2. 데이터베이스 & ORM (PostgreSQL)
-    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
-    runtimeOnly 'org.postgresql:postgresql'
-
-    // 3. 인메모리 캐시 (Redis - P95 응답속도 방어용)
-    implementation 'org.springframework.boot:spring-boot-starter-data-redis'
-
-    // 4. 대용량 데이터 처리 (Spring Batch - 새벽 슈퍼셀 API 수집용)
-    implementation 'org.springframework.boot:spring-boot-starter-batch'
-    implementation 'org.springframework.batch:spring-batch-integration'
-
-    // 5. 관제 및 모니터링
-    implementation 'org.springframework.boot:spring-boot-starter-actuator'
-    runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
-
-    // 6. API 문서 (Swagger / SpringDoc)
-    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.3.0'
-
-    // 7. DB 마이그레이션
-    implementation 'org.flywaydb:flyway-core:10.20.1'
-    implementation 'org.flywaydb:flyway-database-postgresql:10.20.1'
-
-    // 8. Rate Limiting
-    implementation 'com.google.guava:guava:33.2.1-jre'
-
-    // 9. 개발 편의성
-    compileOnly 'org.projectlombok:lombok'
-    annotationProcessor 'org.projectlombok:lombok'
-    developmentOnly 'org.springframework.boot:spring-boot-devtools'
-
-    // 8. 테스트 환경
-    testImplementation 'org.springframework.boot:spring-boot-starter-test'
-    testImplementation 'org.springframework.batch:spring-batch-test'
-}
-
-processResources {
-    filesMatching('**/application*.yml') {
-        filter(org.apache.tools.ant.filters.ReplaceTokens, tokens: [
-            buildTime: new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone('UTC'))
-        ])
-    }
-}
-
-bootRun {
-    def envFile = file('.env')
-    if (envFile.exists()) {
-        envFile.readLines().each { line ->
-            if (line && !line.startsWith('#') && line.contains('=')) {
-                def idx = line.indexOf('=')
-                def key = line.substring(0, idx).trim()
-                def value = line.substring(idx + 1).trim()
-                environment key, value
-            }
+    java {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(21)
+            vendor = JvmVendorSpec.AMAZON
         }
     }
-}
 
-test {
-    useJUnitPlatform()
+    repositories { mavenCentral() }
+
+    dependencyManagement {
+        imports {
+            mavenBom "org.springframework.boot:spring-boot-dependencies:3.2.5"
+        }
+    }
+
+    dependencies {
+        compileOnly         'org.projectlombok:lombok'
+        annotationProcessor 'org.projectlombok:lombok'
+    }
+
+    test { useJUnitPlatform() }
 }

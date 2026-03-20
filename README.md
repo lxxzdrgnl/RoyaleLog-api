@@ -668,4 +668,73 @@ Validation 실패 시 `details` 에 필드별 오류가 포함됩니다.
     "size": "최대 50까지 입력 가능합니다."
   }
 }
+
+---
+
+## 모듈 구조 (Gradle Multi-Project)
+
+### 왜 단일 모듈이 아닌 3-submodule 구조인가?
+
+Phase 1까지는 단일 JAR으로 api와 batch를 함께 실행했다. K3s 배포 단계에서 두 가지 문제가 생겼다.
+
+**문제 1 — 독립 배포 불가**
+api 코드 1줄 수정해도 batch까지 재배포 → Batch Job이 재시작되면 진행 중이던 수집이 중단된다.
+
+**문제 2 — cross-layer 의존성**
+`OnDemandMatchService`(api 레이어)가 `DeckAnalyzerWriter`(batch 레이어)를 직접 `@Autowired`했다.
+멀티모듈로 분리하면 이 참조가 컴파일 에러가 되므로 구조적으로 막아야 했다.
+
+### 분리 결과
+
+```
+:core   ← 공유 라이브러리 (plain JAR, no main)
+          Entity, Repository, ClashRoyaleClient, AnalyzerPersistenceService 등
+
+:api    ← REST API 서버 (port 8080)
+          implementation project(':core')
+          Flyway 적용, Redis, Swagger
+          bootJar → royalelog-api.jar
+
+:batch  ← Batch Job 서버 (port 8081)
+          implementation project(':core')
+          Spring Batch, HTTP 트리거 엔드포인트
+          bootJar → royalelog-batch.jar
+```
+
+**의존 규칙**: `:api ⇎ :batch` — 두 모듈은 서로 임포트하지 않는다. DB를 통해서만 통신.
+
+### cross-layer 의존성 해결 — `AnalyzerPersistenceService`
+
+`DeckAnalyzerWriter`의 SQL 로직(deck_dictionary UPSERT, match_features UPSERT, battle_log_raw 갱신)을 `:core`에 `AnalyzerPersistenceService`로 추출했다.
+
+```
+Before:
+  OnDemandMatchService (api) ──→ DeckAnalyzerWriter (batch)   ← 순환 위험
+
+After:
+  OnDemandMatchService (api)  ──→ AnalyzerPersistenceService (core)
+  DeckAnalyzerWriter   (batch) ──→ AnalyzerPersistenceService (core)
+```
+
+`DeckAnalyzerWriter`는 배치 전용 최적화(`SET LOCAL synchronous_commit = off`)만 추가하고 나머지는 위임한다.
+
+### Flyway는 `:api`에만
+
+두 서비스가 동시에 Flyway를 실행하면 `flyway_schema_history` lock 충돌이 발생한다.
+`:api`가 먼저 스키마를 최신화하고, `:batch`는 `flyway.enabled=false`로 시작한다.
+K3s에서 api → batch `initContainer` 순서로 배포 순서를 보장한다.
+
+### `java-library` 플러그인 (`core/build.gradle`)
+
+`:core`에서 JPA, WebFlux 등을 `api` scope으로 선언하면 `:api`, `:batch`가 `:core`만 의존해도 transitive dependency를 직접 임포트할 수 있다. `java` 플러그인의 `implementation`은 transitive를 외부에 노출하지 않으므로 불가능하다.
+
+```groovy
+// core/build.gradle
+apply plugin: 'java-library'
+dependencies {
+    api 'org.springframework.boot:spring-boot-starter-data-jpa'   // transitive 노출
+    api 'org.springframework.boot:spring-boot-starter-webflux'
+    api 'org.springframework.boot:spring-boot-starter-jdbc'
+}
+```
 ```

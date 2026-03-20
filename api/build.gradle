@@ -1,0 +1,36 @@
+apply plugin: 'org.springframework.boot'
+
+dependencies {
+    implementation project(':core')
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    runtimeOnly    'io.micrometer:micrometer-registry-prometheus'
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.3.0'
+    implementation 'org.flywaydb:flyway-core:10.20.1'
+    implementation 'org.flywaydb:flyway-database-postgresql:10.20.1'
+    developmentOnly 'org.springframework.boot:spring-boot-devtools'
+}
+
+bootJar { archiveFileName = 'royalelog-api.jar' }
+
+processResources {
+    filesMatching('**/application*.yml') {
+        filter(org.apache.tools.ant.filters.ReplaceTokens, tokens: [
+            buildTime: new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone('UTC'))
+        ])
+    }
+}
+
+bootRun {
+    def envFile = file('../.env')
+    if (envFile.exists()) {
+        envFile.readLines().each { line ->
+            if (line && !line.startsWith('#') && line.contains('=')) {
+                def idx = line.indexOf('=')
+                environment line.substring(0, idx).trim(), line.substring(idx + 1).trim()
+            }
+        }
+    }
+}
