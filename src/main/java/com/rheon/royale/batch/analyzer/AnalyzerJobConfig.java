@@ -8,14 +8,17 @@ import org.springframework.batch.core.Step;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
-import org.springframework.batch.item.database.JpaPagingItemReader;
-import org.springframework.batch.item.database.builder.JpaPagingItemReaderBuilder;
+import com.rheon.royale.domain.entity.BattleLogRawId;
+import org.springframework.batch.item.database.JdbcCursorItemReader;
+import org.springframework.batch.item.database.builder.JdbcCursorItemReaderBuilder;
+import org.springframework.batch.item.support.SynchronizedItemStreamReader;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.transaction.PlatformTransactionManager;
 
-import jakarta.persistence.EntityManagerFactory;
-import java.util.Map;
+import javax.sql.DataSource;
+import java.time.LocalDateTime;
 
 @Configuration
 @RequiredArgsConstructor
@@ -23,7 +26,7 @@ public class AnalyzerJobConfig {
 
     private final JobRepository jobRepository;
     private final PlatformTransactionManager transactionManager;
-    private final EntityManagerFactory entityManagerFactory;
+    private final DataSource dataSource;
     private final DeckAnalyzerProcessor deckAnalyzerProcessor;
     private final DeckAnalyzerWriter deckAnalyzerWriter;
     private final StatsOverwriteTasklet statsOverwriteTasklet;
@@ -34,11 +37,11 @@ public class AnalyzerJobConfig {
      *
      * Step 1: deck_dictionary + match_features 적재
      *   - analyzer_version < CURRENT_VERSION 인 배틀만 처리
-     *   - 중간 실패 후 재실행 시 이미 처리된 배틀은 자동 Skip
+     *   - SynchronizedItemStreamReader + 멀티스레드: 병렬 파싱
+     *   - saveState(false): 멀티스레드 환경에서 페이지 상태 저장 비활성화
      *
      * Step 2: stats_decks_daily overwrite
-     *   - TRUNCATE + INSERT in transaction → deterministic
-     *   - Dirty Read 방어: 트랜잭션 COMMIT 전까지 유저는 기존 통계 조회
+     *   - Rename Swap → dirty read 없이 atomic 교체
      */
     @Bean
     public Job deckAnalyzerJob() {
@@ -50,11 +53,18 @@ public class AnalyzerJobConfig {
 
     @Bean
     public Step deckAnalyzerStep() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(4);
+        executor.setMaxPoolSize(4);
+        executor.setThreadNamePrefix("analyzer-");
+        executor.initialize();
+
         return new StepBuilder("deckAnalyzerStep", jobRepository)
-                .<BattleLogRaw, AnalyzedBattle>chunk(50, transactionManager)
-                .reader(battleLogRawReader())
+                .<BattleLogRaw, AnalyzedBattle>chunk(500, transactionManager)
+                .reader(synchronizedBattleLogReader())
                 .processor(deckAnalyzerProcessor)
                 .writer(deckAnalyzerWriter)
+                .taskExecutor(executor)
                 .faultTolerant()
                 .skipLimit(100)
                 .skip(Exception.class)
@@ -68,24 +78,43 @@ public class AnalyzerJobConfig {
                 .build();
     }
 
+    @Bean
+    public SynchronizedItemStreamReader<BattleLogRaw> synchronizedBattleLogReader() {
+        SynchronizedItemStreamReader<BattleLogRaw> reader = new SynchronizedItemStreamReader<>();
+        reader.setDelegate(battleLogRawReader());
+        return reader;
+    }
+
     /**
-     * analyzer_version < current_version 조건 (DB에서 동적 조회)
-     *   - 0 < 1 → 미처리 (최초 실행)
-     *   - 1 < 2 → 이전 버전 처리 배틀 재처리 (로직 변경 시 analyzer_meta UPDATE 한 줄로 해결)
-     *   - 현재 버전으로 처리된 배틀은 읽지 않음
+     * JdbcCursorItemReader — JPA 대신 JDBC 직접 사용
+     *
+     * JpaCursorItemReader 문제: Hibernate 1차 캐시에 엔티티 누적 → 1500만건 OOM
+     * JdbcCursorItemReader: ResultSet 스트리밍 → 메모리 일정하게 유지 (fetchSize 단위 버퍼)
+     *
+     * analyzer_version < current_version 조건
+     *   - 0 < 1 → 미처리, 1 < 2 → 이전 버전 재처리
      */
     @Bean
-    public JpaPagingItemReader<BattleLogRaw> battleLogRawReader() {
-        return new JpaPagingItemReaderBuilder<BattleLogRaw>()
+    public JdbcCursorItemReader<BattleLogRaw> battleLogRawReader() {
+        int currentVersion = analyzerMetaService.currentVersion();
+        return new JdbcCursorItemReaderBuilder<BattleLogRaw>()
                 .name("battleLogRawReader")
-                .entityManagerFactory(entityManagerFactory)
-                .pageSize(50)
-                .queryString("""
-                        SELECT b FROM BattleLogRaw b
-                        WHERE b.analyzerVersion < :currentVersion
-                        ORDER BY b.id.createdAt ASC
-                        """)
-                .parameterValues(Map.of("currentVersion", analyzerMetaService.currentVersion()))
+                .dataSource(dataSource)
+                .fetchSize(500)
+                .sql("""
+                        SELECT battle_id, created_at, player_tag, battle_type, raw_json, analyzer_version
+                        FROM battle_log_raw
+                        WHERE analyzer_version < %d
+                        ORDER BY created_at ASC, battle_id ASC
+                        """.formatted(currentVersion))
+                .rowMapper((rs, rowNum) -> BattleLogRaw.builder()
+                        .id(new BattleLogRawId(rs.getString("battle_id"),
+                                rs.getObject("created_at", LocalDateTime.class)))
+                        .playerTag(rs.getString("player_tag"))
+                        .battleType(rs.getString("battle_type"))
+                        .rawJson(rs.getString("raw_json"))
+                        .build()
+                )
                 .build();
     }
 }

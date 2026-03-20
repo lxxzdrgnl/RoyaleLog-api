@@ -39,7 +39,7 @@ public class StatsOverwriteTasklet implements Tasklet {
 
     @Override
     public RepeatStatus execute(StepContribution contribution, ChunkContext chunkContext) {
-        // 1. 전체 재집계 → stats_new
+        // 1. 최근 7일 재집계 → stats_new
         //    deck_hash = refined_deck_hash (진화/히어로 인식 정밀 해시, 없으면 base로 fallback)
         //    base_deck_hash = 유사덱 그룹핑 기준 (UI에서 "같은 구성 덱 전체 승률" 계산에 사용)
         jdbcTemplate.execute("DROP TABLE IF EXISTS stats_new");
@@ -53,11 +53,16 @@ public class StatsOverwriteTasklet implements Tasklet {
                     SUM(result)::int                                  AS win_count,
                     COUNT(*)::int                                     AS use_count
                 FROM match_features
+                WHERE battle_date >= CURRENT_DATE - 7
                 GROUP BY battle_date,
                          COALESCE(refined_deck_hash, deck_hash),
                          deck_hash,
                          battle_type
                 """);
+
+        // 인덱스 생성 (RENAME 전 → API 조회 시 Full Scan 방지)
+        jdbcTemplate.execute("CREATE INDEX ON stats_new (deck_hash)");
+        jdbcTemplate.execute("CREATE INDEX ON stats_new (stat_date, battle_type)");
 
         int count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM stats_new", Integer.class);
         log.info("[StatsOverwrite] 집계 완료: {}건 → swap 시작", count);
