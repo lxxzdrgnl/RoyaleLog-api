@@ -7,9 +7,6 @@ import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.item.ItemStreamReader;
 import org.springframework.batch.item.database.JdbcCursorItemReader;
 import org.springframework.batch.item.database.builder.JdbcCursorItemReaderBuilder;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.annotation.Scope;
-import org.springframework.stereotype.Component;
 
 import javax.sql.DataSource;
 import java.sql.Timestamp;
@@ -27,11 +24,10 @@ import java.util.Set;
  *      트로피 플레이어는 통과 → Processor에서 배틀별 브라켓 분류
  *      (한 플레이어가 PvP + trail 등 복수 브라켓에 기여 가능)
  *
+ * CollectorJobConfig에서 @Bean @StepScope로 생성.
  * SynchronizedItemStreamReader로 감싸서 AsyncItemProcessor 50 스레드 안전성 보장.
  */
 @Slf4j
-@Component
-@Scope("step")   // @StepScope 대신 @Scope("step") 사용 — @Component와 함께 쓸 때 더 안전
 public class BracketAwarePlayerReader implements ItemStreamReader<PlayerToCrawl> {
 
     private final JdbcCursorItemReader<PlayerToCrawl> delegate;
@@ -43,11 +39,8 @@ public class BracketAwarePlayerReader implements ItemStreamReader<PlayerToCrawl>
     public BracketAwarePlayerReader(
             BracketBattleCounter bracketBattleCounter,
             PlayerToCrawlRepository playerToCrawlRepository,
-            @Value("#{jobParameters['startTime']}") String startTime,
-            @Value("#{jobParameters['batchSeq'] ?: '0'}") String batchSeq,
-            @Value("#{jobParameters['hashK'] ?: '10'}") String hashKStr,
-            @Value("${collector.max-players-per-bracket:20000}") int maxPlayersPerBracket,
-            DataSource dataSource) {
+            String startTime, String batchSeq, String hashKStr,
+            int maxPlayersPerBracket, DataSource dataSource) {
 
         this.bracketBattleCounter = bracketBattleCounter;
         this.playerToCrawlRepository = playerToCrawlRepository;
@@ -141,10 +134,10 @@ public class BracketAwarePlayerReader implements ItemStreamReader<PlayerToCrawl>
                 return null;
             }
 
-            // PoL 플레이어만 pre-check (플레이어 브라켓 = 배틀 브라켓 1:1)
+            // 브라켓 full이면 skip — API 호출(300ms) 절약
+            // trophy 유저는 special 배틀도 낼 수 있지만, special 한도(30만)가 넉넉하므로 포기 가능
             String bracket = player.getBracket();
-            if (bracket != null && bracket.startsWith("pol_")
-                    && bracketBattleCounter.isBracketFull(bracket)) {
+            if (bracket != null && bracketBattleCounter.isBracketFull(bracket)) {
                 continue;
             }
 

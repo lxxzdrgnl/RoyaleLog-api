@@ -1,7 +1,7 @@
 -- V15__players_bracket.sql
-ALTER TABLE players_to_crawl ADD COLUMN bracket VARCHAR(20);
+ALTER TABLE players_to_crawl ADD COLUMN IF NOT EXISTS bracket VARCHAR(20);
 
-CREATE INDEX idx_ptc_bracket_active
+CREATE INDEX IF NOT EXISTS idx_ptc_bracket_active
     ON players_to_crawl (bracket)
     WHERE is_active = true;
 

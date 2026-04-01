@@ -6,8 +6,12 @@ import org.springframework.batch.core.StepContribution;
 import org.springframework.batch.core.scope.context.ChunkContext;
 import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.batch.repeat.RepeatStatus;
+import org.springframework.cache.Cache;
+import org.springframework.cache.CacheManager;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+
+import java.util.List;
 
 /**
  * stats_decks_daily_current 재계산 — Rename Swap 방식
@@ -36,12 +40,13 @@ import org.springframework.stereotype.Component;
 public class StatsOverwriteTasklet implements Tasklet {
 
     private final JdbcTemplate jdbcTemplate;
+    private final CacheManager cacheManager;
 
     @Override
     public RepeatStatus execute(StepContribution contribution, ChunkContext chunkContext) {
-        // 1. 최근 7일 재집계 → stats_new
+        // 1. 최근 8일 재집계 → stats_new
         //    deck_hash = refined_deck_hash (진화/히어로 인식 정밀 해시, 없으면 base로 fallback)
-        //    base_deck_hash = 유사덱 그룹핑 기준 (UI에서 "같은 구성 덱 전체 승률" 계산에 사용)
+        //    card_ids, card_evo_levels: match_features에서 직접 집계 (deck_dictionary 불필요)
         // 이전 실행 실패로 남은 잔여물 정리 (멱등성 보장)
         jdbcTemplate.execute("DROP TABLE IF EXISTS stats_old CASCADE");
         jdbcTemplate.execute("DROP TABLE IF EXISTS stats_new");
@@ -55,9 +60,11 @@ public class StatsOverwriteTasklet implements Tasklet {
                     league_number,
                     starting_trophies,
                     SUM(result)::int                                  AS win_count,
-                    COUNT(*)::int                                     AS use_count
+                    COUNT(*)::int                                     AS use_count,
+                    (array_agg(card_ids))[1]                          AS card_ids,
+                    (array_agg(card_evo_levels))[1]                   AS card_evo_levels
                 FROM match_features
-                WHERE battle_date >= CURRENT_DATE - 7
+                WHERE battle_date >= CURRENT_DATE - 8
                 GROUP BY battle_date,
                          COALESCE(refined_deck_hash, deck_hash),
                          deck_hash,
@@ -70,7 +77,8 @@ public class StatsOverwriteTasklet implements Tasklet {
         jdbcTemplate.execute("CREATE INDEX ON stats_new (deck_hash)");
         jdbcTemplate.execute("CREATE INDEX ON stats_new (stat_date, battle_type)");
 
-        int count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM stats_new", Integer.class);
+        Integer count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM stats_new", Integer.class);
+        if (count == null) count = 0;
         log.info("[StatsOverwrite] 집계 완료: {}건 → swap 시작", count);
 
         // 2. Rename swap (트랜잭션: 카탈로그 레벨 원자 연산)
@@ -93,6 +101,13 @@ public class StatsOverwriteTasklet implements Tasklet {
         // 3. 격리된 기존 테이블 DROP (COMMIT 이후 → 안전)
         if (currentExists) {
             jdbcTemplate.execute("DROP TABLE IF EXISTS stats_old CASCADE");
+        }
+
+        // 4. Redis 캐시 eviction — swap 완료 후 최초 요청 시 신규 데이터 반환 보장
+        for (String name : List.of("tierList_1", "tierList_3", "tierList_7",
+                                   "cardRanking_1", "cardRanking_3", "cardRanking_7")) {
+            Cache cache = cacheManager.getCache(name);
+            if (cache != null) cache.clear();
         }
 
         log.info("[StatsOverwrite] stats_decks_daily_current swap 완료: {}건", count);
