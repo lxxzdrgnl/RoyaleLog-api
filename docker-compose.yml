@@ -67,5 +67,45 @@ services:
       redis:
         condition: service_healthy
 
+  # ── ML Worker (port 8082) ────────────────────────────────────────
+  worker:
+    build:
+      context: ../RoyaleLog-worker
+      dockerfile: Dockerfile
+    container_name: royalelog-worker
+    env_file: .env
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    ports:
+      - "8082:8082"
+    volumes:
+      - worker-models:/app/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+
+  # ── MLflow Tracking Server ───────────────────────────────────────
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:latest
+    container_name: royalelog-mlflow
+    ports:
+      - "5000:5000"
+    command: >
+      mlflow server
+      --backend-store-uri postgresql://${DB_USER:-royale}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-royalelog}
+      --default-artifact-root /mlruns
+      --host 0.0.0.0
+    volumes:
+      - mlflow-artifacts:/mlruns
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   postgres-data:
+  worker-models:
+  mlflow-artifacts:
