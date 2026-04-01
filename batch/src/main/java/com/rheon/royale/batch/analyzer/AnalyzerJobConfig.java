@@ -31,23 +31,29 @@ public class AnalyzerJobConfig {
     private final DeckAnalyzerWriter deckAnalyzerWriter;
     private final StatsOverwriteTasklet statsOverwriteTasklet;
     private final AnalyzerMetaService analyzerMetaService;
+    private final AnalyzerProgressListener analyzerProgressListener;
+    private final com.rheon.royale.batch.collector.PartitionManagerTasklet partitionManagerTasklet;
 
     /**
-     * Analyzer Job 2-Step 구성
+     * Analyzer Job 3-Step 구성
      *
+     * Step 0: 파티션 자동 생성 (match_features 포함)
      * Step 1: deck_dictionary + match_features 적재
-     *   - analyzer_version < CURRENT_VERSION 인 배틀만 처리
-     *   - SynchronizedItemStreamReader + 멀티스레드: 병렬 파싱
-     *   - saveState(false): 멀티스레드 환경에서 페이지 상태 저장 비활성화
-     *
-     * Step 2: stats_decks_daily overwrite
-     *   - Rename Swap → dirty read 없이 atomic 교체
+     * Step 2: stats_decks_daily overwrite (Rename Swap)
      */
     @Bean
     public Job deckAnalyzerJob() {
         return new JobBuilder("deckAnalyzerJob", jobRepository)
-                .start(deckAnalyzerStep())
+                .start(analyzerPartitionStep())
+                .next(deckAnalyzerStep())
                 .next(statsOverwriteStep())
+                .build();
+    }
+
+    @Bean
+    public Step analyzerPartitionStep() {
+        return new StepBuilder("analyzerPartitionStep", jobRepository)
+                .tasklet(partitionManagerTasklet, transactionManager)
                 .build();
     }
 
@@ -68,6 +74,7 @@ public class AnalyzerJobConfig {
                 .faultTolerant()
                 .skipLimit(100)
                 .skip(Exception.class)
+                .listener(analyzerProgressListener)
                 .build();
     }
 
@@ -105,6 +112,7 @@ public class AnalyzerJobConfig {
                         SELECT battle_id, created_at, player_tag, battle_type, raw_json, analyzer_version
                         FROM battle_log_raw
                         WHERE analyzer_version < %d
+                          AND created_at >= CURRENT_DATE - 8
                         ORDER BY created_at ASC, battle_id ASC
                         """.formatted(currentVersion))
                 .rowMapper((rs, rowNum) -> BattleLogRaw.builder()

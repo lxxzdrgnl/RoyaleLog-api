@@ -53,10 +53,68 @@ public class BatchController {
 
     private final JobLauncher jobLauncher;
     private final JobExplorer jobExplorer;
+    private final com.rheon.royale.batch.collector.BracketBattleCounter bracketBattleCounter;
 
     @Qualifier("battleLogCollectorJob") private final Job battleLogCollectorJob;
     @Qualifier("deckAnalyzerJob")       private final Job deckAnalyzerJob;
     @Qualifier("cardSyncJob")           private final Job cardSyncJob;
+
+    // ── 모니터링 ─────────────────────────────────────────────────────────
+
+    @Operation(summary = "배치 실시간 모니터링 — 실행 중인 Job 자동 감지, 없으면 최신 완료 Job 반환")
+    @GetMapping("/monitor")
+    public ApiResponse<MonitorResponse> monitor() {
+        // 1. STARTED 상태인 Job 찾기 (collector → analyzer → card-sync 순)
+        for (String jobName : java.util.List.of("battleLogCollectorJob", "deckAnalyzerJob", "cardSyncJob")) {
+            var running = jobExplorer.findRunningJobExecutions(jobName);
+            if (!running.isEmpty()) {
+                var exec = running.iterator().next();
+                return ApiResponse.ok(buildMonitorResponse(jobName, exec));
+            }
+        }
+
+        // 2. 실행 중인 게 없으면 가장 최근 완료된 Job 반환
+        for (String jobName : java.util.List.of("battleLogCollectorJob", "deckAnalyzerJob", "cardSyncJob")) {
+            var instances = jobExplorer.getJobInstances(jobName, 0, 1);
+            if (!instances.isEmpty()) {
+                var executions = jobExplorer.getJobExecutions(instances.get(0));
+                if (!executions.isEmpty()) {
+                    return ApiResponse.ok(buildMonitorResponse(jobName, executions.get(0)));
+                }
+            }
+        }
+        return ApiResponse.ok(null);
+    }
+
+    private MonitorResponse buildMonitorResponse(String jobName, org.springframework.batch.core.JobExecution exec) {
+        var steps = exec.getStepExecutions().stream()
+                .map(s -> {
+                    Integer total = null;
+                    if (s.getExecutionContext().containsKey("totalTarget")) {
+                        total = s.getExecutionContext().getInt("totalTarget");
+                    }
+                    return new StepProgress(s.getStepName(), s.getStatus().name(),
+                            (int) s.getReadCount(), (int) s.getWriteCount(), (int) s.getSkipCount(), total);
+                })
+                .toList();
+
+        var counters = "battleLogCollectorJob".equals(jobName)
+                ? bracketBattleCounter.snapshot().entrySet().stream()
+                    .map(e -> new BracketCount(e.getKey(), e.getValue()[0], e.getValue()[1]))
+                    .toList()
+                : java.util.List.<BracketCount>of();
+
+        return new MonitorResponse(
+                jobName, exec.getId(), exec.getStatus().name(),
+                exec.getStartTime() != null ? exec.getStartTime().toString() : null,
+                exec.getEndTime() != null ? exec.getEndTime().toString() : null,
+                steps, counters);
+    }
+
+    public record MonitorResponse(String jobName, Long executionId, String status, String startTime, String endTime,
+                                  java.util.List<StepProgress> steps, java.util.List<BracketCount> brackets) {}
+    public record StepProgress(String name, String status, int read, int write, int skip, Integer totalTarget) {}
+    public record BracketCount(String bracket, int current, int limit) {}
 
     // ── 실행 ─────────────────────────────────────────────────────────────
 
@@ -196,10 +254,11 @@ public class BatchController {
 
     public record ExecutionDetail(
             Long executionId, String status,
-            JobParams jobParameters,         // date 포함 — Airflow/로그 없이도 어느 날짜 작업인지 확인
+            JobParams jobParameters,
             String startTime, String endTime,
             String exitCode, String exitMessage,
-            List<StepSummary> steps
+            List<StepSummary> steps,
+            java.util.Map<String, Integer> bracketCounts  // 브라켓별 수집 건수 (Collector only)
     ) {
         static ExecutionDetail from(JobExecution e) {
             List<StepSummary> steps = e.getStepExecutions().stream()
@@ -213,18 +272,35 @@ public class BatchController {
                     ))
                     .toList();
 
+            // collectBattleLogStep의 ExecutionContext에서 bracket.* 추출
+            var bracketCounts = new java.util.TreeMap<String, Integer>();
+            e.getStepExecutions().stream()
+                    .filter(s -> "collectBattleLogStep".equals(s.getStepName()))
+                    .findFirst()
+                    .ifPresent(s -> {
+                        var ctx = s.getExecutionContext();
+                        ctx.entrySet().forEach(entry -> {
+                            if (entry.getKey().startsWith("bracket.")) {
+                                bracketCounts.put(
+                                        entry.getKey().substring(8),
+                                        ((Number) entry.getValue()).intValue());
+                            }
+                        });
+                    });
+
             return new ExecutionDetail(
                     e.getId(),
                     e.getStatus().name(),
                     new JobParams(
                             e.getJobParameters().getString("date"),
-                            e.getJobParameters().getLong("runId")  // force 재실행 시에만 존재
+                            e.getJobParameters().getLong("runId")
                     ),
                     e.getStartTime() != null ? e.getStartTime().toString() : null,
                     e.getEndTime()   != null ? e.getEndTime().toString()   : null,
                     e.getExitStatus().getExitCode(),
                     e.getExitStatus().getExitDescription(),
-                    steps
+                    steps,
+                    bracketCounts.isEmpty() ? null : bracketCounts
             );
         }
     }
