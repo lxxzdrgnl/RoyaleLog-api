@@ -53,6 +53,7 @@ public class BatchController {
 
     private final JobLauncher jobLauncher;
     private final JobExplorer jobExplorer;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
     private final com.rheon.royale.batch.collector.BracketBattleCounter bracketBattleCounter;
 
     @Qualifier("battleLogCollectorJob") private final Job battleLogCollectorJob;
@@ -115,6 +116,62 @@ public class BatchController {
                                   java.util.List<StepProgress> steps, java.util.List<BracketCount> brackets) {}
     public record StepProgress(String name, String status, int read, int write, int skip, Integer totalTarget) {}
     public record BracketCount(String bracket, int current, int limit) {}
+
+    // ── DB 현황 ──────────────────────────────────────────────────────────
+
+    @Operation(summary = "DB 현황 — 테이블 용량, 유저/배틀 통계, 디스크")
+    @GetMapping("/db-stats")
+    public ApiResponse<DbStats> dbStats() {
+        return ApiResponse.ok(buildDbStats());
+    }
+
+    private DbStats buildDbStats() {
+        // 테이블 용량
+        var tables = jdbcTemplate.query("""
+                SELECT tablename, pg_total_relation_size(schemaname||'.'||tablename) as bytes
+                FROM pg_tables WHERE schemaname='public'
+                ORDER BY bytes DESC LIMIT 15
+                """, (rs, i) -> new TableSize(rs.getString("tablename"), rs.getLong("bytes")));
+
+        // 브라켓별 유저 수
+        var brackets = jdbcTemplate.query("""
+                SELECT bracket, count(*) as cnt
+                FROM players_to_crawl
+                WHERE is_active = true AND bracket IS NOT NULL
+                GROUP BY bracket ORDER BY bracket
+                """, (rs, i) -> new BracketUserCount(rs.getString("bracket"), rs.getInt("cnt")));
+
+        // 배틀 타입별 건수
+        var battleTypes = jdbcTemplate.query("""
+                SELECT battle_type, count(*) as cnt
+                FROM battle_log_raw
+                GROUP BY battle_type ORDER BY cnt DESC
+                """, (rs, i) -> new BattleTypeCount(rs.getString("battle_type"), rs.getLong("cnt")));
+
+        // 총 유저/배틀
+        Integer totalPlayers = jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM players_to_crawl WHERE is_active = true", Integer.class);
+        Long totalBattles = jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM battle_log_raw", Long.class);
+
+        // 디스크
+        Long diskFree = jdbcTemplate.queryForObject(
+                "SELECT pg_database_size(current_database())", Long.class);
+
+        return new DbStats(
+                totalPlayers != null ? totalPlayers : 0,
+                totalBattles != null ? totalBattles : 0,
+                diskFree != null ? diskFree : 0,
+                tables, brackets, battleTypes);
+    }
+
+    public record DbStats(int totalPlayers, long totalBattles, long dbSizeBytes,
+                          java.util.List<TableSize> tables,
+                          java.util.List<BracketUserCount> brackets,
+                          java.util.List<BattleTypeCount> battleTypes) {}
+    public record TableSize(String name, long bytes) {}
+    public record BracketUserCount(String bracket, int count) {}
+    public record BattleTypeCount(String type, long count) {}
 
     // ── 실행 ─────────────────────────────────────────────────────────────
 

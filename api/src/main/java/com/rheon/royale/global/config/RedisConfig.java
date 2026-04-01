@@ -22,9 +22,6 @@ import java.util.Map;
 @EnableCaching
 public class RedisConfig {
 
-    @Value("${cache.ttl.tier-list:3600}")
-    private long tierListTtl;
-
     @Value("${cache.ttl.player-battle-log:300}")
     private long playerBattleLogTtl;
 
@@ -48,11 +45,13 @@ public class RedisConfig {
                 .disableCachingNullValues();
 
         Map<String, RedisCacheConfiguration> cacheConfigs = Map.of(
-                "tierList",        defaultConfig.entryTtl(Duration.ofSeconds(tierListTtl)),
                 "tierList_1",      defaultConfig.entryTtl(Duration.ofMinutes(10)),
                 "tierList_3",      defaultConfig.entryTtl(Duration.ofMinutes(30)),
                 "tierList_7",      defaultConfig.entryTtl(Duration.ofHours(1)),
-                "tierList_30",     defaultConfig.entryTtl(Duration.ofHours(1)),
+                "cardRanking_1",   defaultConfig.entryTtl(Duration.ofMinutes(10)),
+                "cardRanking_3",   defaultConfig.entryTtl(Duration.ofMinutes(30)),
+                "cardRanking_7",   defaultConfig.entryTtl(Duration.ofHours(1)),
+                "cards",           defaultConfig.entryTtl(Duration.ofHours(24)),
                 "playerBattleLog", defaultConfig.entryTtl(Duration.ofSeconds(playerBattleLogTtl))
         );
 

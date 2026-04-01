@@ -8,5 +8,6 @@ public record CrRankingPlayer(
         String name,
         Integer rank,
         Integer expLevel,
-        Integer eloRating
+        Integer eloRating,
+        Integer leagueNumber  // PoL 리그 레벨 (0=브론즈 ~ 9=챔피언십)
 ) {}

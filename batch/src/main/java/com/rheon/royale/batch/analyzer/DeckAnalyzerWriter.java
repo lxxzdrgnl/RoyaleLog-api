@@ -27,7 +27,6 @@ public class DeckAnalyzerWriter implements ItemWriter<AnalyzedBattle> {
         // WAL 동기화 비활성화 — 배치 전용 최적화
         jdbcTemplate.execute("SET LOCAL synchronous_commit = off");
 
-        analyzerPersistenceService.batchUpsertDeckDictionary(items);
         analyzerPersistenceService.batchInsertMatchFeatures(items);
         analyzerPersistenceService.batchMarkProcessed(items, currentVersion);
 

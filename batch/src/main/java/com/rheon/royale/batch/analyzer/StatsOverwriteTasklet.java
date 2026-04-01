@@ -61,8 +61,8 @@ public class StatsOverwriteTasklet implements Tasklet {
                     starting_trophies,
                     SUM(result)::int                                  AS win_count,
                     COUNT(*)::int                                     AS use_count,
-                    (array_agg(card_ids))[1]                          AS card_ids,
-                    (array_agg(card_evo_levels))[1]                   AS card_evo_levels
+                    MIN(card_ids::text)::bigint[]                      AS card_ids,
+                    MIN(card_evo_levels::text)::smallint[]             AS card_evo_levels
                 FROM match_features
                 WHERE battle_date >= CURRENT_DATE - 8
                 GROUP BY battle_date,

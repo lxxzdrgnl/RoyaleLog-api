@@ -10,6 +10,8 @@ import org.springframework.batch.core.StepContribution;
 import org.springframework.batch.core.scope.context.ChunkContext;
 import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.batch.repeat.RepeatStatus;
+import org.springframework.cache.Cache;
+import org.springframework.cache.CacheManager;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -20,6 +22,7 @@ public class CardSyncTasklet implements Tasklet {
 
     private final ClashRoyaleClient clashRoyaleClient;
     private final CardRepository cardRepository;
+    private final CacheManager cacheManager;
 
     @Override
     @Transactional
@@ -38,6 +41,10 @@ public class CardSyncTasklet implements Tasklet {
                 synced++;
             }
         }
+
+        // cards 캐시 eviction — 신규 카드/아이콘 즉시 반영
+        Cache cache = cacheManager.getCache("cards");
+        if (cache != null) cache.clear();
 
         log.info("[CardSyncJob] 카드 동기화 완료: {}건", synced);
         contribution.incrementWriteCount(synced);
