@@ -1,5 +1,6 @@
 package com.rheon.royale.batch.collector;
 
+import com.rheon.royale.batch.collector.dto.DiscoveredOpponent;
 import com.rheon.royale.batch.collector.dto.PlayerBattleLogs;
 import com.rheon.royale.domain.entity.BattleLogRaw;
 import com.rheon.royale.domain.repository.PlayerToCrawlRepository;
@@ -31,20 +32,27 @@ public class CollectBattleLogWriter implements ItemWriter<PlayerBattleLogs> {
             ON CONFLICT (battle_id, created_at) DO NOTHING
             """;
 
+    // 발견된 상대방 UPSERT: 트로피/리그/브라켓도 함께 저장
+    // COALESCE: 이미 존재하는 유저라면 기존 값을 덮어쓰지 않음 (null 무시)
     private static final String UPSERT_OPPONENT_SQL = """
-            INSERT INTO players_to_crawl (player_tag, name, is_active, updated_at)
-            VALUES (?, ?, true, NOW())
+            INSERT INTO players_to_crawl (player_tag, name, is_active, current_trophies, league_number, bracket, updated_at)
+            VALUES (?, ?, true, ?, ?, ?, NOW())
             ON CONFLICT (player_tag) DO UPDATE
-                SET name      = EXCLUDED.name,
-                    updated_at = NOW()
-            WHERE players_to_crawl.name IS DISTINCT FROM EXCLUDED.name
+                SET name             = EXCLUDED.name,
+                    current_trophies = COALESCE(EXCLUDED.current_trophies, players_to_crawl.current_trophies),
+                    league_number    = COALESCE(EXCLUDED.league_number,    players_to_crawl.league_number),
+                    bracket          = COALESCE(EXCLUDED.bracket,          players_to_crawl.bracket),
+                    updated_at       = NOW()
+            WHERE players_to_crawl.name             IS DISTINCT FROM EXCLUDED.name
+               OR players_to_crawl.current_trophies IS DISTINCT FROM EXCLUDED.current_trophies
+               OR players_to_crawl.league_number    IS DISTINCT FROM EXCLUDED.league_number
             """;
 
     @Override
     @Transactional
     public void write(Chunk<? extends PlayerBattleLogs> chunk) {
         List<Object[]> battleArgs = new ArrayList<>();
-        Map<String, String> chunkOpponents = new HashMap<>();  // 청크 전체 상대방 합산
+        Map<String, DiscoveredOpponent> chunkOpponents = new HashMap<>();  // 청크 전체 상대방 합산
 
         for (PlayerBattleLogs item : chunk) {
             for (BattleLogRaw battle : item.battles()) {
@@ -58,8 +66,12 @@ public class CollectBattleLogWriter implements ItemWriter<PlayerBattleLogs> {
             }
             // 청크 전체 상대방 합산 (같은 청크 내 중복 제거)
             chunkOpponents.putAll(item.discoveredOpponents());
-            // last_crawled_at 갱신
-            playerToCrawlRepository.updateLastCrawledAt(item.player().getPlayerTag());
+            // last_crawled_at + 트로피/리그/브라켓 갱신
+            playerToCrawlRepository.updateAfterCrawl(
+                    item.player().getPlayerTag(),
+                    item.currentTrophies(),
+                    item.leagueNumber(),
+                    item.bracket());
         }
 
         if (!battleArgs.isEmpty()) {
@@ -86,7 +98,21 @@ public class CollectBattleLogWriter implements ItemWriter<PlayerBattleLogs> {
         if (!chunkOpponents.isEmpty()) {
             List<Object[]> opponentArgs = chunkOpponents.entrySet().stream()
                     .sorted(Map.Entry.comparingByKey())
-                    .map(e -> new Object[]{e.getKey(), e.getValue()})
+                    .map(e -> {
+                        DiscoveredOpponent opp = e.getValue();
+                        // 플레이어 브라켓: leagueNumber 있으면 pol_N, 없으면 trophies 기반
+                        String bracket = BracketBattleCounter.toBracket(
+                                opp.leagueNumber() != null ? "pathOfLegend" : "PvP",
+                                opp.leagueNumber(),
+                                opp.trophies());
+                        return new Object[]{
+                                e.getKey(),
+                                opp.name(),
+                                opp.trophies(),
+                                opp.leagueNumber(),
+                                bracket
+                        };
+                    })
                     .toList();
 
             // 50개씩 나눠서 UPSERT — 대량 GIN 업데이트 분산
@@ -97,6 +123,13 @@ public class CollectBattleLogWriter implements ItemWriter<PlayerBattleLogs> {
                         (ps, args) -> {
                             ps.setString(1, (String) args[0]);
                             ps.setString(2, (String) args[1]);
+                            // trophies / league / bracket: null 가능
+                            if (args[2] != null) ps.setInt(3, (Integer) args[2]);
+                            else                 ps.setNull(3, java.sql.Types.INTEGER);
+                            if (args[3] != null) ps.setInt(4, (Integer) args[3]);
+                            else                 ps.setNull(4, java.sql.Types.INTEGER);
+                            if (args[4] != null) ps.setString(5, (String) args[4]);
+                            else                 ps.setNull(5, java.sql.Types.VARCHAR);
                         });
             }
 

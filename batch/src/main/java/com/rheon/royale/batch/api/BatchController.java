@@ -61,14 +61,18 @@ public class BatchController {
     // ── 실행 ─────────────────────────────────────────────────────────────
 
     @Operation(summary = "배틀 로그 수집 Job 실행",
-               description = "Airflow: ?date={{ ds }} | 재처리: &force=true")
+               description = "Airflow: ?date={{ ds }} | 재처리: &force=true | K-단계: &hashK=4&batchSeq=1")
     @PostMapping("/collector")
     public ApiResponse<JobResult> runCollector(
             @Parameter(description = "실행 날짜 (yyyy-MM-dd)")
             @RequestParam(required = false) String date,
             @Parameter(description = "COMPLETED 상태 강제 재실행")
-            @RequestParam(defaultValue = "false") boolean force) throws Exception {
-        return ApiResponse.ok(launch("battleLogCollectorJob", battleLogCollectorJob, date, force));
+            @RequestParam(defaultValue = "false") boolean force,
+            @Parameter(description = "Airflow K-단계 전략용 배치 순번 (salt 용도)")
+            @RequestParam(defaultValue = "0") String batchSeq,
+            @Parameter(description = "샘플링 비율 분모 (K=10 → 10% 샘플링, K=1 → 전체)")
+            @RequestParam(defaultValue = "10") String hashK) throws Exception {
+        return ApiResponse.ok(launch("battleLogCollectorJob", battleLogCollectorJob, date, force, batchSeq, hashK));
     }
 
     @Operation(summary = "Analyzer Job 실행 (deck_dictionary / match_features / stats 집계)",
@@ -77,7 +81,7 @@ public class BatchController {
     public ApiResponse<JobResult> runAnalyzer(
             @RequestParam(required = false) String date,
             @RequestParam(defaultValue = "false") boolean force) throws Exception {
-        return ApiResponse.ok(launch("deckAnalyzerJob", deckAnalyzerJob, date, force));
+        return ApiResponse.ok(launch("deckAnalyzerJob", deckAnalyzerJob, date, force, "0", "10"));
     }
 
     @Operation(summary = "카드 메타 동기화 Job 실행 (주 1회)",
@@ -86,7 +90,7 @@ public class BatchController {
     public ApiResponse<JobResult> runCardSync(
             @RequestParam(required = false) String date,
             @RequestParam(defaultValue = "false") boolean force) throws Exception {
-        return ApiResponse.ok(launch("cardSyncJob", cardSyncJob, date, force));
+        return ApiResponse.ok(launch("cardSyncJob", cardSyncJob, date, force, "0", "10"));
     }
 
     // ── 상태 조회 ─────────────────────────────────────────────────────────
@@ -131,7 +135,8 @@ public class BatchController {
 
     // ── 내부 헬퍼 ─────────────────────────────────────────────────────────
 
-    private JobResult launch(String jobName, Job job, String date, boolean force) throws Exception {
+    private JobResult launch(String jobName, Job job, String date, boolean force,
+                             String batchSeq, String hashK) throws Exception {
         String resolvedDate = (date != null && !date.isBlank()) ? date : LocalDate.now().toString();
 
         // force라도 RUNNING이면 차단 — "재실행 허용"이지 "동시 실행 허용"이 아님
@@ -143,7 +148,9 @@ public class BatchController {
 
         JobParametersBuilder builder = new JobParametersBuilder()
                 .addString("date", resolvedDate)
-                .addString("startTime", LocalDateTime.now().toString());
+                .addString("startTime", LocalDateTime.now().toString())
+                .addString("batchSeq", batchSeq)
+                .addString("hashK", hashK);
 
         if (force) {
             // COMPLETED 재실행: runId 추가 → 새 JobInstance 생성

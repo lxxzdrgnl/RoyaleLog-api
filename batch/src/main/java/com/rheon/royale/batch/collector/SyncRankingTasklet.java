@@ -23,6 +23,7 @@ public class SyncRankingTasklet implements Tasklet {
 
     private final ClashRoyaleClient clashRoyaleClient;
     private final PlayerToCrawlRepository playerToCrawlRepository;
+    private final BracketBattleCounter bracketBattleCounter;
 
     @Override
     @Transactional
@@ -40,7 +41,11 @@ public class SyncRankingTasklet implements Tasklet {
         // 2. 현재 랭킹 플레이어 UPSERT (current_rank, name 갱신 + is_active=true 보장)
         //    deactivateAll() 제거: 전체 수집 대상이 BFS로 확장되므로 랭킹 탈락자도 수집 유지
         for (CrRankingPlayer player : allPlayers) {
-            playerToCrawlRepository.upsertRanked(player.tag(), player.name(), player.rank());
+            // PoL 랭커는 leagueNumber가 항상 존재 → bracket = pol_N
+            String bracket = BracketBattleCounter.toBracket(
+                    "pathOfLegend", player.leagueNumber(), null);
+            playerToCrawlRepository.upsertRanked(
+                    player.tag(), player.name(), player.rank(), player.leagueNumber(), bracket);
         }
 
         log.info("[SyncRanking] players_to_crawl 동기화 완료: {}명", allPlayers.size());

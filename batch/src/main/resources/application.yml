@@ -29,6 +29,11 @@ spring:
       enabled: false
     jdbc:
       initialize-schema: always
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 3000ms
   flyway:
     enabled: false
 
@@ -41,6 +46,14 @@ clash:
     token: ${CLASH_API_TOKEN}
     rate-limit: 120
     retry-max: 3
+
+collector:
+  max-players-per-bracket: 20000   # 브라켓별 최대 조회 플레이어 수
+  bracket:
+    max-trophy-low: 50000          # arena_01~10 최대 수집 건수
+    max-trophy: 100000             # arena_11~28 최대 수집 건수
+    max-pol: 100000                # PoL 리그별 최대 수집 건수
+    max-special: 300000            # trail/tournament 등 특수모드 최대 수집 건수
 
 management:
   endpoints:

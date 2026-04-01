@@ -39,12 +39,26 @@ public class PlayerToCrawl {
     @Column(name = "priority", nullable = false)
     private int priority = 2;
 
+    @Column(name = "current_trophies")
+    private Integer currentTrophies;
+
+    /** PoL 리그 레벨 (0=브론즈 ~ 9=챔피언십). ladder 전용 유저는 null. */
+    @Column(name = "league_number")
+    private Integer leagueNumber;
+
+    /** 플레이어 브라켓 (arena_01~28 / pol_0~9 / unknown / null=미분류).
+     *  BracketBattleCounter.toBracket() 기준. 쓰기 경로에서 항상 계산 후 저장. */
+    @Column(name = "bracket", length = 20)
+    private String bracket;
+
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 
     @Builder
     public PlayerToCrawl(String playerTag, String name, Integer currentRank,
                          LocalDateTime lastCrawledAt, boolean isActive, int priority,
+                         Integer currentTrophies, Integer leagueNumber,
+                         String bracket,
                          LocalDateTime updatedAt) {
         this.playerTag = playerTag;
         this.name = name;
@@ -52,6 +66,9 @@ public class PlayerToCrawl {
         this.lastCrawledAt = lastCrawledAt;
         this.isActive = isActive;
         this.priority = priority;
+        this.currentTrophies = currentTrophies;
+        this.leagueNumber = leagueNumber;
+        this.bracket = bracket;
         this.updatedAt = updatedAt;
     }
 }
