@@ -63,8 +63,11 @@ public class MatchRepository {
 
                 AnalyzedBattle analyzed = deckAnalyzerProcessor.process(raw);
 
-                JsonNode teamPlayer     = battle.path("team").get(0);
-                JsonNode opponentPlayer = battle.path("opponent").get(0);
+                JsonNode teamArr = battle.path("team");
+                JsonNode oppArr  = battle.path("opponent");
+                if (teamArr.isEmpty() || oppArr.isEmpty()) continue;
+                JsonNode teamPlayer     = teamArr.get(0);
+                JsonNode opponentPlayer = oppArr.get(0);
 
                 String gameMode = battle.path("gameMode").path("name").asText(null);
                 entries.add(new BattleEntry(
@@ -96,7 +99,12 @@ public class MatchRepository {
                 SELECT player_tag, name, current_rank
                 FROM players_to_crawl
                 WHERE name ILIKE ?
-                ORDER BY current_rank ASC NULLS LAST
+                ORDER BY
+                    CASE WHEN LOWER(name) = LOWER(?) THEN 0
+                         WHEN name ILIKE ?           THEN 1
+                         ELSE 2 END,
+                    current_rank ASC NULLS LAST,
+                    name ASC
                 LIMIT 20
                 """,
                 (rs, rowNum) -> new PlayerSearchResult(
@@ -104,7 +112,7 @@ public class MatchRepository {
                         rs.getString("name"),
                         (Integer) rs.getObject("current_rank")
                 ),
-                "%" + name + "%");
+                "%" + name + "%", name, name + "%");
     }
 
     public boolean existsByPlayerTag(String playerTag) {

@@ -26,27 +26,8 @@ public class CollectBattleLogWriter implements ItemWriter<PlayerBattleLogs> {
     private final JdbcTemplate jdbcTemplate;
     private final PlayerToCrawlRepository playerToCrawlRepository;
 
-    private static final String INSERT_SQL = """
-            INSERT INTO battle_log_raw (battle_id, player_tag, battle_type, raw_json, created_at)
-            VALUES (?, ?, ?, CAST(? AS jsonb), ?)
-            ON CONFLICT (battle_id, created_at) DO NOTHING
-            """;
-
-    // 발견된 상대방 UPSERT: 트로피/리그/브라켓도 함께 저장
-    // COALESCE: 이미 존재하는 유저라면 기존 값을 덮어쓰지 않음 (null 무시)
-    private static final String UPSERT_OPPONENT_SQL = """
-            INSERT INTO players_to_crawl (player_tag, name, is_active, current_trophies, league_number, bracket, updated_at)
-            VALUES (?, ?, true, ?, ?, ?, NOW())
-            ON CONFLICT (player_tag) DO UPDATE
-                SET name             = EXCLUDED.name,
-                    current_trophies = COALESCE(EXCLUDED.current_trophies, players_to_crawl.current_trophies),
-                    league_number    = COALESCE(EXCLUDED.league_number,    players_to_crawl.league_number),
-                    bracket          = COALESCE(EXCLUDED.bracket,          players_to_crawl.bracket),
-                    updated_at       = NOW()
-            WHERE players_to_crawl.name             IS DISTINCT FROM EXCLUDED.name
-               OR players_to_crawl.current_trophies IS DISTINCT FROM EXCLUDED.current_trophies
-               OR players_to_crawl.league_number    IS DISTINCT FROM EXCLUDED.league_number
-            """;
+    private static final String INSERT_SQL = com.rheon.royale.global.util.BatchSqlConstants.INSERT_BATTLE_SQL;
+    private static final String UPSERT_OPPONENT_SQL = com.rheon.royale.global.util.BatchSqlConstants.UPSERT_PLAYER_SQL;
 
     @Override
     @Transactional
@@ -74,8 +55,11 @@ public class CollectBattleLogWriter implements ItemWriter<PlayerBattleLogs> {
                     item.bracket());
         }
 
+        // WAL 동기화 끄기 — bulk insert 가속 (배치 데이터는 재수집 가능)
+        jdbcTemplate.execute("SET LOCAL synchronous_commit = off");
+
         if (!battleArgs.isEmpty()) {
-            int[][] result = jdbcTemplate.batchUpdate(INSERT_SQL, battleArgs, 500,
+            int[][] result = jdbcTemplate.batchUpdate(INSERT_SQL, battleArgs, 1000,
                     (ps, args) -> {
                         ps.setString(1, (String) args[0]);
                         ps.setString(2, (String) args[1]);

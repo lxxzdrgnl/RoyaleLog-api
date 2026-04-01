@@ -13,6 +13,9 @@ import com.rheon.royale.domain.match.dto.BattleEntry;
 import com.rheon.royale.domain.match.dto.CardInfo;
 import com.rheon.royale.domain.match.dto.ParticipantDetail;
 import com.rheon.royale.global.util.BattleHashUtils;
+import com.rheon.royale.global.util.BattleJsonPruner;
+import com.rheon.royale.global.util.BracketClassifier;
+import com.rheon.royale.global.util.JsonNodeUtils;
 import com.rheon.royale.infrastructure.external.clashroyale.ClashRoyaleClient;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -46,22 +49,10 @@ import java.util.OptionalDouble;
 @RequiredArgsConstructor
 public class OnDemandMatchService {
 
-    private static final int RETENTION_DAYS = 30;
+    private static final int RETENTION_DAYS = 8;
 
-    private static final String INSERT_BATTLE_SQL = """
-            INSERT INTO battle_log_raw (battle_id, player_tag, battle_type, raw_json, created_at)
-            VALUES (?, ?, ?, CAST(? AS jsonb), ?)
-            ON CONFLICT (battle_id, created_at) DO NOTHING
-            """;
-
-    private static final String UPSERT_PLAYER_SQL = """
-            INSERT INTO players_to_crawl (player_tag, name, is_active, updated_at)
-            VALUES (?, ?, true, NOW())
-            ON CONFLICT (player_tag) DO UPDATE
-                SET name       = COALESCE(EXCLUDED.name, players_to_crawl.name),
-                    is_active  = true,
-                    updated_at = NOW()
-            """;
+    private static final String INSERT_BATTLE_SQL = com.rheon.royale.global.util.BatchSqlConstants.INSERT_BATTLE_SQL;
+    private static final String UPSERT_PLAYER_SQL = com.rheon.royale.global.util.BatchSqlConstants.UPSERT_PLAYER_SQL;
 
     private final ClashRoyaleClient clashRoyaleClient;
     private final DeckAnalyzerProcessor deckAnalyzerProcessor;
@@ -79,6 +70,8 @@ public class OnDemandMatchService {
         List<Object[]> battleArgs = new ArrayList<>();
         List<AnalyzedBattle> analyzedList = new ArrayList<>();
         String playerName = null;
+        Integer currentTrophies = null;
+        Integer currentLeague   = null;
 
         try {
             JsonNode battles = objectMapper.readTree(rawJson);
@@ -101,10 +94,12 @@ public class OnDemandMatchService {
                 String battleType  = battle.path("type").asText(null);
                 String gameMode    = battle.path("gameMode").path("name").asText(null);
 
-                // 유저 이름 첫 배틀에서 추출
+                // 첫 배틀에서 이름 + 트로피/리그 추출 (CR API newest-first)
                 if (playerName == null) {
                     playerName = teamPlayer.path("name").asText(null);
                 }
+                if (currentTrophies == null) currentTrophies = JsonNodeUtils.getIntOrNull(teamPlayer, "startingTrophies");
+                if (currentLeague == null)   currentLeague   = JsonNodeUtils.getIntOrNull(battle, "leagueNumber");
 
                 // 30일 이상 된 배틀은 파티션 없음 → 저장 및 분석 skip
                 if (createdAt.isBefore(LocalDateTime.now().minusDays(RETENTION_DAYS))) {
@@ -112,7 +107,7 @@ public class OnDemandMatchService {
                 }
 
                 // battle_log_raw 저장 대상 누적 — batch와 동일하게 pruned JSON 저장
-                String prunedJson = pruneForStorage((ObjectNode) battle.deepCopy());
+                String prunedJson = BattleJsonPruner.prune((ObjectNode) battle.deepCopy());
                 battleArgs.add(new Object[]{
                         battleId, normalizedTag, battleType, prunedJson,
                         Timestamp.valueOf(createdAt)
@@ -160,7 +155,10 @@ public class OnDemandMatchService {
                         ps.setTimestamp(5, (Timestamp) args[4]);
                     });
 
-            jdbcTemplate.update(UPSERT_PLAYER_SQL, normalizedTag, playerName);
+            String bracket = BracketClassifier.toBracket(
+                    currentLeague != null ? "pathOfLegend" : "PvP",
+                    currentLeague, currentTrophies);
+            jdbcTemplate.update(UPSERT_PLAYER_SQL, normalizedTag, playerName, currentTrophies, currentLeague, bracket);
             log.info("[OnDemand] {} ({}) — {}건 저장, players_to_crawl 편입",
                     normalizedTag, playerName, battleArgs.size());
         }
@@ -253,35 +251,4 @@ public class OnDemandMatchService {
         return new CardInfo(id, name, null, card.path("level").asInt(0), 0, 0);
     }
 
-    /**
-     * battle_log_raw 저장용 JSON 경량화 — batch CollectBattleLogProcessor와 동일 규칙
-     *
-     * 제거: deckSelection, isHostedMatch, isLadderTournament (battle), globalRank (player),
-     *       name, iconUrls, rarity, maxLevel, maxEvolutionLevel, starLevel (card)
-     */
-    private String pruneForStorage(ObjectNode battle) {
-        battle.remove(java.util.List.of("deckSelection", "isHostedMatch", "isLadderTournament"));
-        for (String side : java.util.List.of("team", "opponent")) {
-            JsonNode sideNode = battle.path(side);
-            for (JsonNode playerNode : sideNode) {
-                ObjectNode p = (ObjectNode) playerNode;
-                p.remove("globalRank");
-                pruneCards(p.path("cards"));
-                pruneCards(p.path("supportCards"));
-            }
-        }
-        return battle.toString();
-    }
-
-    private void pruneCards(JsonNode cardsNode) {
-        for (JsonNode cardNode : cardsNode) {
-            ObjectNode card = (ObjectNode) cardNode;
-            card.remove("name");
-            card.remove("iconUrls");
-            card.remove("rarity");
-            card.remove("maxLevel");
-            card.remove("maxEvolutionLevel");
-            card.remove("starLevel");
-        }
-    }
 }

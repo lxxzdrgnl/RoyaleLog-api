@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rheon.royale.batch.analyzer.dto.AnalyzedBattle;
 import com.rheon.royale.domain.entity.BattleLogRaw;
 import com.rheon.royale.global.util.DeckHashUtils;
+import com.rheon.royale.global.util.JsonNodeUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.batch.item.ItemProcessor;
@@ -47,14 +48,9 @@ public class DeckAnalyzerProcessor implements ItemProcessor<BattleLogRaw, Analyz
         int result = teamCrowns > opponentCrowns ? 1 : 0;
 
         // leagueNumber: pathOfLegend 전용 — 배틀 루트 레벨 (team[0] 하위가 아님)
-        Integer leagueNumber = null;
-        JsonNode ln = root.path("leagueNumber");
-        if (!ln.isMissingNode() && !ln.isNull()) leagueNumber = ln.asInt();
-
+        Integer leagueNumber = JsonNodeUtils.getIntOrNull(root, "leagueNumber");
         // startingTrophies: PvP 트로피 모드 (team[0].startingTrophies)
-        Integer startingTrophies = null;
-        JsonNode st = team.get(0).path("startingTrophies");
-        if (!st.isMissingNode() && !st.isNull()) startingTrophies = st.asInt();
+        Integer startingTrophies = JsonNodeUtils.getIntOrNull(team.get(0), "startingTrophies");
 
         // createdAt = BattleHashUtils.parseBattleTime(battleTime) → UTC LocalDateTime
         // .toLocalDate() = UTC 날짜 → battle_date 파티션 키와 동일 기준 보장

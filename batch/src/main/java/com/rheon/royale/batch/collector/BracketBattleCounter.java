@@ -42,6 +42,18 @@ public class BracketBattleCounter implements StepExecutionListener {
                 maxTrophyLow, maxTrophy, maxPol, maxSpecial);
     }
 
+    @Override
+    public org.springframework.batch.core.ExitStatus afterStep(StepExecution stepExecution) {
+        // 브라켓별 최종 카운터를 ExecutionContext에 저장 → Spring Batch가 DB에 영속화
+        // History API에서 꺼내서 "아레나별 수집 건수" 표시 가능
+        var ctx = stepExecution.getExecutionContext();
+        counts.forEach((bracket, counter) -> ctx.putInt("bracket." + bracket, counter.get()));
+
+        int total = counts.values().stream().mapToInt(AtomicInteger::get).sum();
+        log.info("[BracketCounter] 최종 — 총 {}건, 브라켓 {}개", total, counts.size());
+        return null; // null = 기본 ExitStatus 유지
+    }
+
     private int limitOf(String bracket) {
         if (bracket.startsWith("pol_"))    return maxPol;
         if ("special".equals(bracket))    return maxSpecial;
@@ -95,56 +107,16 @@ public class BracketBattleCounter implements StepExecutionListener {
         return true;
     }
 
-    // 트로피 기반이지만 일반 ladder(PvP)와 분리해서 집계할 경쟁 모드
-    private static final java.util.Set<String> SPECIAL_MODES = java.util.Set.of(
-            "trail", "riverRacePvP", "riverRaceDuel", "riverRaceDuelColosseum",
-            "boatBattle", "tournament", "PvE"
-    );
+    /** 브라켓별 현재 카운트 + 한도 스냅샷 (모니터링 API용) */
+    public java.util.Map<String, int[]> snapshot() {
+        java.util.Map<String, int[]> result = new java.util.TreeMap<>();
+        counts.forEach((bracket, counter) ->
+                result.put(bracket, new int[]{ counter.get(), limitOf(bracket) }));
+        return result;
+    }
 
-    // 분석 의미 없는 비경쟁 모드 → trophy_unknown으로 처리 (cap 소진 방지)
-    private static final java.util.Set<String> NON_COMPETITIVE = java.util.Set.of(
-            "friendly", "clanMate", "unknown"
-    );
-
-    /** 브라켓 분류: pathOfLegend → pol_N, 특수경쟁 → special, PvP → arena_NN, 비경쟁 → trophy_unknown */
+    /** BracketClassifier 위임 — 분류 로직 단일 소스 유지 */
     public static String toBracket(String battleType, Integer leagueNumber, Integer startingTrophies) {
-        if ("pathOfLegend".equals(battleType)) {
-            return "pol_" + (leagueNumber != null ? leagueNumber : "unknown");
-        }
-        if (NON_COMPETITIVE.contains(battleType)) {
-            return "trophy_unknown";
-        }
-        if (SPECIAL_MODES.contains(battleType)) {
-            return "special";
-        }
-        if (startingTrophies == null || startingTrophies <= 0) return "trophy_unknown";
-        if (startingTrophies <   300) return "arena_01";
-        if (startingTrophies <   600) return "arena_02";
-        if (startingTrophies <  1000) return "arena_03";
-        if (startingTrophies <  1300) return "arena_04";
-        if (startingTrophies <  1600) return "arena_05";
-        if (startingTrophies <  2000) return "arena_06";
-        if (startingTrophies <  2300) return "arena_07";
-        if (startingTrophies <  2600) return "arena_08";
-        if (startingTrophies <  3000) return "arena_09";
-        if (startingTrophies <  3400) return "arena_10";
-        if (startingTrophies <  3800) return "arena_11";
-        if (startingTrophies <  4200) return "arena_12";
-        if (startingTrophies <  4600) return "arena_13";
-        if (startingTrophies <  5000) return "arena_14";
-        if (startingTrophies <  5500) return "arena_15";
-        if (startingTrophies <  6000) return "arena_16";
-        if (startingTrophies <  6500) return "arena_17";
-        if (startingTrophies <  7000) return "arena_18";
-        if (startingTrophies <  7500) return "arena_19";
-        if (startingTrophies <  8000) return "arena_20";
-        if (startingTrophies <  8500) return "arena_21";
-        if (startingTrophies <  9000) return "arena_22";
-        if (startingTrophies <  9500) return "arena_23";
-        if (startingTrophies < 10000) return "arena_24";
-        if (startingTrophies < 10500) return "arena_25";
-        if (startingTrophies < 11000) return "arena_26";
-        if (startingTrophies < 11500) return "arena_27";
-        return "arena_28";
+        return com.rheon.royale.global.util.BracketClassifier.toBracket(battleType, leagueNumber, startingTrophies);
     }
 }

@@ -11,6 +11,8 @@ import com.rheon.royale.domain.entity.PlayerToCrawl;
 import com.rheon.royale.domain.repository.PlayerToCrawlRepository;
 import com.rheon.royale.global.error.BusinessException;
 import com.rheon.royale.global.util.BattleHashUtils;
+import com.rheon.royale.global.util.BattleJsonPruner;
+import com.rheon.royale.global.util.JsonNodeUtils;
 import com.rheon.royale.infrastructure.external.clashroyale.ClashRoyaleClient;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -83,14 +85,8 @@ public class CollectBattleLogProcessor implements ItemProcessor<PlayerToCrawl, P
 
             // 플레이어 본인 최신 트로피/리그 추출 (첫 유효값만 사용)
             // startingTrophies: team[0] 하위, leagueNumber: 배틀 루트 레벨
-            if (currentTrophies == null) {
-                JsonNode st = teamPlayer.path("startingTrophies");
-                if (!st.isMissingNode() && !st.isNull()) currentTrophies = st.asInt();
-            }
-            if (currentLeague == null) {
-                JsonNode ln = battle.path("leagueNumber");
-                if (!ln.isMissingNode() && !ln.isNull()) currentLeague = ln.asInt();
-            }
+            if (currentTrophies == null) currentTrophies = JsonNodeUtils.getIntOrNull(teamPlayer, "startingTrophies");
+            if (currentLeague == null)   currentLeague   = JsonNodeUtils.getIntOrNull(battle, "leagueNumber");
 
             String playerTag   = teamPlayer.path("tag").asText();
             String opponentTag = opponentPlayer.path("tag").asText();
@@ -98,15 +94,9 @@ public class CollectBattleLogProcessor implements ItemProcessor<PlayerToCrawl, P
             // 상대방 발견 → BFS 풀 확장용 누적 (tag → DiscoveredOpponent, 중복 자동 제거)
             if (opponentTag != null && !opponentTag.isBlank()) {
                 String  opponentName   = opponentPlayer.path("name").asText(null);
-                Integer opponentTrophy = null;
-                Integer opponentLeague = null;
-
-                JsonNode ost = opponentPlayer.path("startingTrophies");
-                if (!ost.isMissingNode() && !ost.isNull()) opponentTrophy = ost.asInt();
-
+                Integer opponentTrophy = JsonNodeUtils.getIntOrNull(opponentPlayer, "startingTrophies");
                 // leagueNumber는 배틀 루트 레벨 — 양쪽 플레이어 동일
-                JsonNode oln = battle.path("leagueNumber");
-                if (!oln.isMissingNode() && !oln.isNull()) opponentLeague = oln.asInt();
+                Integer opponentLeague = JsonNodeUtils.getIntOrNull(battle, "leagueNumber");
 
                 discoveredOpponents.put(opponentTag,
                         new DiscoveredOpponent(opponentName, opponentTrophy, opponentLeague));
@@ -125,12 +115,9 @@ public class CollectBattleLogProcessor implements ItemProcessor<PlayerToCrawl, P
             String battleType = battle.path("type").asText("unknown");
 
             // 브라켓별 수집 한도 초과 시 skip (오늘 배치 런 기준)
-            Integer trophiesForBracket = currentTrophies; // 이미 추출한 값 재사용
-            JsonNode stNode = teamPlayer.path("startingTrophies");
-            if (!stNode.isMissingNode() && !stNode.isNull()) trophiesForBracket = stNode.asInt();
-            Integer leagueForBracket = null;
-            JsonNode lnNode = battle.path("leagueNumber");
-            if (!lnNode.isMissingNode() && !lnNode.isNull()) leagueForBracket = lnNode.asInt();
+            Integer trophiesForBracket = JsonNodeUtils.getIntOrNull(teamPlayer, "startingTrophies");
+            if (trophiesForBracket == null) trophiesForBracket = currentTrophies;
+            Integer leagueForBracket = JsonNodeUtils.getIntOrNull(battle, "leagueNumber");
 
             String bracket = BracketBattleCounter.toBracket(battleType, leagueForBracket, trophiesForBracket);
             if (!bracketBattleCounter.tryIncrement(bracket)) {
@@ -142,7 +129,7 @@ public class CollectBattleLogProcessor implements ItemProcessor<PlayerToCrawl, P
                     .id(new BattleLogRawId(battleId, createdAt))
                     .playerTag(player.getPlayerTag())
                     .battleType(battleType)
-                    .rawJson(pruneJson((ObjectNode) battle.deepCopy()))
+                    .rawJson(BattleJsonPruner.prune((ObjectNode) battle.deepCopy()))
                     .build();
 
             polBattles.add(row);
@@ -173,43 +160,4 @@ public class CollectBattleLogProcessor implements ItemProcessor<PlayerToCrawl, P
         return new PlayerBattleLogs(player, polBattles, discoveredOpponents, currentTrophies, currentLeague, playerBracket);
     }
 
-    /**
-     * 저장 전 불필요 필드 제거 — cards 테이블에 있거나 분석에 불필요한 정적 메타
-     *
-     * 제거 대상:
-     *   카드: name, iconUrls, rarity, maxLevel, maxEvolutionLevel, starLevel
-     *   배틀: deckSelection, isHostedMatch, isLadderTournament, globalRank
-     *
-     * 유지 대상 (분석 핵심):
-     *   카드: id, level, evolutionLevel, elixirCost
-     *   배틀: type, battleTime, arena, gameMode, leagueNumber,
-     *         startingTrophies, trophyChange, crowns, elixirLeaked,
-     *         kingTowerHitPoints, princessTowersHitPoints
-     */
-    private String pruneJson(ObjectNode battle) {
-        battle.remove(List.of("deckSelection", "isHostedMatch", "isLadderTournament"));
-
-        for (String side : List.of("team", "opponent")) {
-            JsonNode sideNode = battle.path(side);
-            for (JsonNode playerNode : sideNode) {
-                ObjectNode p = (ObjectNode) playerNode;
-                p.remove("globalRank");
-                pruneCards(p.path("cards"));
-                pruneCards(p.path("supportCards"));
-            }
-        }
-        return battle.toString();
-    }
-
-    private void pruneCards(JsonNode cardsNode) {
-        for (JsonNode cardNode : cardsNode) {
-            ObjectNode card = (ObjectNode) cardNode;
-            card.remove("name");
-            card.remove("iconUrls");
-            card.remove("rarity");
-            card.remove("maxLevel");
-            card.remove("maxEvolutionLevel");
-            card.remove("starLevel");
-        }
-    }
 }
