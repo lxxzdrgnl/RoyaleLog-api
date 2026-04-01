@@ -22,7 +22,7 @@ public record AnalyzedBattle(
         String battleType,
         String deckHash,                  // 내 덱 base hash (카드 ID만)
         String refinedDeckHash,           // 내 덱 refined hash (진화/히어로 포함)
-        Long[] cardIds,                   // 정렬된 9개
+        Long[] cardIds,                   // 정렬된 9개 (숫자 오름차순)
         String opponentHash,              // 상대 덱 base hash
         String refinedOpponentHash,       // 상대 덱 refined hash
         Long[] opponentCardIds,           // 정렬된 9개
@@ -30,5 +30,9 @@ public record AnalyzedBattle(
         BigDecimal avgLevel,
         int evolutionCount,
         Integer leagueNumber,             // pathOfLegend 전용 (0~9), 나머지 null
-        Integer startingTrophies          // PvP 트로피 모드 전용, 나머지 null
+        Integer startingTrophies,         // PvP 트로피 모드 전용, 나머지 null
+        Short[] evoLevels,                // 내 덱 카드별 진화 레벨 (cardIds와 동일 순서)
+        Short[] opponentEvoLevels,        // 상대 덱 카드별 진화 레벨 (opponentCardIds와 동일 순서)
+        Short[] cardLevels,               // 내 덱 카드별 레벨 (cardIds와 동일 순서, 0-14)
+        Short[] opponentCardLevels        // 상대 덱 카드별 레벨 (opponentCardIds와 동일 순서, 0-14)
 ) {}

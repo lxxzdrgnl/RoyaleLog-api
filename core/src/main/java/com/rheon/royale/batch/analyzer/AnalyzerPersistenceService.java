@@ -9,10 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.Date;
 import java.sql.Timestamp;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
 
 /**
  * Shared analyzer persistence — lives in :core so both :api (OnDemandMatchService)
@@ -26,41 +23,16 @@ public class AnalyzerPersistenceService {
     private final JdbcTemplate jdbcTemplate;
 
     /**
-     * On-Demand full persist: deck_dictionary → match_features → mark processed.
+     * On-Demand full persist: match_features → mark processed.
      * @Transactional here because OnDemandMatchService has no outer transaction.
      */
     @Transactional
     public void persistOnDemand(List<AnalyzedBattle> items) {
         if (items.isEmpty()) return;
         int version = currentAnalyzerVersion();
-        batchUpsertDeckDictionary(items);
         batchInsertMatchFeatures(items);
         batchMarkProcessed(items, version);
         log.debug("[AnalyzerPersistenceService] On-Demand {}건 저장", items.size());
-    }
-
-    /** Dedup + sort by deck_hash (deadlock prevention), ON CONFLICT DO NOTHING */
-    public void batchUpsertDeckDictionary(List<? extends AnalyzedBattle> items) {
-        Map<String, Long[]> unique = new LinkedHashMap<>();
-        for (AnalyzedBattle b : items) {
-            if (b.deckHash() != null && b.cardIds() != null)
-                unique.putIfAbsent(b.deckHash(), b.cardIds());
-            if (b.opponentHash() != null && b.opponentCardIds() != null)
-                unique.putIfAbsent(b.opponentHash(), b.opponentCardIds());
-        }
-        List<Map.Entry<String, Long[]>> entries = unique.entrySet().stream()
-                .sorted(Map.Entry.comparingByKey())
-                .collect(Collectors.toList());
-
-        jdbcTemplate.batchUpdate("""
-                INSERT INTO deck_dictionary (deck_hash, card_ids)
-                VALUES (?, ?) ON CONFLICT (deck_hash) DO NOTHING
-                """,
-                entries, entries.size(),
-                (ps, e) -> {
-                    ps.setString(1, e.getKey());
-                    ps.setArray(2, ps.getConnection().createArrayOf("bigint", e.getValue()));
-                });
     }
 
     /** ON CONFLICT guard: only update when incoming record is newer */
@@ -70,20 +42,29 @@ public class AnalyzerPersistenceService {
                     (battle_id, deck_hash, refined_deck_hash,
                      opponent_hash, refined_opponent_hash,
                      battle_type, battle_date, avg_level, evolution_count, result,
-                     league_number, starting_trophies, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+                     league_number, starting_trophies,
+                     card_ids, card_evo_levels, card_levels,
+                     opponent_card_ids, opponent_card_levels, opponent_card_evo_levels,
+                     updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
                 ON CONFLICT (battle_id, battle_date)
                 DO UPDATE SET
-                    deck_hash             = EXCLUDED.deck_hash,
-                    refined_deck_hash     = EXCLUDED.refined_deck_hash,
-                    opponent_hash         = EXCLUDED.opponent_hash,
-                    refined_opponent_hash = EXCLUDED.refined_opponent_hash,
-                    avg_level             = EXCLUDED.avg_level,
-                    evolution_count       = EXCLUDED.evolution_count,
-                    result                = EXCLUDED.result,
-                    league_number         = EXCLUDED.league_number,
-                    starting_trophies     = EXCLUDED.starting_trophies,
-                    updated_at            = NOW()
+                    deck_hash                = EXCLUDED.deck_hash,
+                    refined_deck_hash        = EXCLUDED.refined_deck_hash,
+                    opponent_hash            = EXCLUDED.opponent_hash,
+                    refined_opponent_hash    = EXCLUDED.refined_opponent_hash,
+                    avg_level                = EXCLUDED.avg_level,
+                    evolution_count          = EXCLUDED.evolution_count,
+                    result                   = EXCLUDED.result,
+                    league_number            = EXCLUDED.league_number,
+                    starting_trophies        = EXCLUDED.starting_trophies,
+                    card_ids                 = EXCLUDED.card_ids,
+                    card_evo_levels          = EXCLUDED.card_evo_levels,
+                    card_levels              = EXCLUDED.card_levels,
+                    opponent_card_ids        = EXCLUDED.opponent_card_ids,
+                    opponent_card_levels     = EXCLUDED.opponent_card_levels,
+                    opponent_card_evo_levels = EXCLUDED.opponent_card_evo_levels,
+                    updated_at               = NOW()
                 WHERE match_features.updated_at < EXCLUDED.updated_at
                 """,
                 items, items.size(),
@@ -102,6 +83,30 @@ public class AnalyzerPersistenceService {
                     else ps.setNull(11, java.sql.Types.INTEGER);
                     if (b.startingTrophies() != null) ps.setInt(12, b.startingTrophies());
                     else ps.setNull(12, java.sql.Types.INTEGER);
+                    // card_ids (13)
+                    if (b.cardIds() != null)
+                        ps.setArray(13, ps.getConnection().createArrayOf("bigint", b.cardIds()));
+                    else ps.setNull(13, java.sql.Types.ARRAY);
+                    // card_evo_levels (14)
+                    if (b.evoLevels() != null)
+                        ps.setArray(14, ps.getConnection().createArrayOf("smallint", b.evoLevels()));
+                    else ps.setNull(14, java.sql.Types.ARRAY);
+                    // card_levels (15) — per-card level array
+                    if (b.cardLevels() != null)
+                        ps.setArray(15, ps.getConnection().createArrayOf("smallint", b.cardLevels()));
+                    else ps.setNull(15, java.sql.Types.ARRAY);
+                    // opponent_card_ids (16)
+                    if (b.opponentCardIds() != null)
+                        ps.setArray(16, ps.getConnection().createArrayOf("bigint", b.opponentCardIds()));
+                    else ps.setNull(16, java.sql.Types.ARRAY);
+                    // opponent_card_levels (17)
+                    if (b.opponentCardLevels() != null)
+                        ps.setArray(17, ps.getConnection().createArrayOf("smallint", b.opponentCardLevels()));
+                    else ps.setNull(17, java.sql.Types.ARRAY);
+                    // opponent_card_evo_levels (18)
+                    if (b.opponentEvoLevels() != null)
+                        ps.setArray(18, ps.getConnection().createArrayOf("smallint", b.opponentEvoLevels()));
+                    else ps.setNull(18, java.sql.Types.ARRAY);
                 });
     }
 

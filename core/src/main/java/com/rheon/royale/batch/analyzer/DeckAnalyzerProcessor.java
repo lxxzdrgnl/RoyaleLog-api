@@ -46,9 +46,9 @@ public class DeckAnalyzerProcessor implements ItemProcessor<BattleLogRaw, Analyz
         int opponentCrowns = opponent.get(0).path("crowns").asInt(0);
         int result = teamCrowns > opponentCrowns ? 1 : 0;
 
-        // leagueNumber: pathOfLegend 전용 (gameMode.id == 72000019 등), team[0].leagueNumber
+        // leagueNumber: pathOfLegend 전용 — 배틀 루트 레벨 (team[0] 하위가 아님)
         Integer leagueNumber = null;
-        JsonNode ln = team.get(0).path("leagueNumber");
+        JsonNode ln = root.path("leagueNumber");
         if (!ln.isMissingNode() && !ln.isNull()) leagueNumber = ln.asInt();
 
         // startingTrophies: PvP 트로피 모드 (team[0].startingTrophies)
@@ -74,7 +74,11 @@ public class DeckAnalyzerProcessor implements ItemProcessor<BattleLogRaw, Analyz
                 teamInfo.avgLevel(),
                 teamInfo.evolutionCount(),
                 leagueNumber,
-                startingTrophies
+                startingTrophies,
+                teamInfo.evoLevels(),
+                opponentInfo.evoLevels(),
+                teamInfo.cardLevels(),
+                opponentInfo.cardLevels()
         );
     }
 
@@ -84,15 +88,18 @@ public class DeckAnalyzerProcessor implements ItemProcessor<BattleLogRaw, Analyz
 
         List<Long> deckCardIds = new ArrayList<>();
         List<String> refinedPairs = new ArrayList<>(); // "id:evoLevel"
+        List<Integer> cardLevelsList = new ArrayList<>();
         int totalLevel = 0;
         int evolutionCount = 0;
 
         for (JsonNode card : cardsNode) {
             long id = card.path("id").asLong();
             int evoLevel = card.path("evolutionLevel").asInt(0);
+            int level = card.path("level").asInt(1);
             deckCardIds.add(id);
             refinedPairs.add(id + ":" + evoLevel);
-            totalLevel += card.path("level").asInt(1);
+            cardLevelsList.add(level);
+            totalLevel += level;
             if (evoLevel > 0) evolutionCount++;
         }
 
@@ -104,12 +111,19 @@ public class DeckAnalyzerProcessor implements ItemProcessor<BattleLogRaw, Analyz
         String deckHash        = DeckHashUtils.deckHash(deckCardIds, towerCardId);
         String refinedDeckHash = DeckHashUtils.refinedDeckHash(refinedPairs, towerCardId);
         Long[] sortedCardIds   = DeckHashUtils.sortedCardIds(deckCardIds, towerCardId);
+        Short[] sortedEvoLevels = DeckHashUtils.sortedEvoLevels(deckCardIds, towerCardId,
+                refinedPairs.stream()
+                        .map(p -> Integer.parseInt(p.split(":")[1]))
+                        .collect(java.util.stream.Collectors.toList()));
+        Short[] sortedCardLevels = DeckHashUtils.sortedCardLevels(deckCardIds, towerCardId, cardLevelsList);
         BigDecimal avgLevel    = BigDecimal.valueOf(totalLevel)
                 .divide(BigDecimal.valueOf(deckCardIds.size()), 2, RoundingMode.HALF_UP);
 
-        return new DeckInfo(deckHash, refinedDeckHash, sortedCardIds, avgLevel, evolutionCount);
+        return new DeckInfo(deckHash, refinedDeckHash, sortedCardIds, avgLevel, evolutionCount,
+                sortedEvoLevels, sortedCardLevels);
     }
 
     private record DeckInfo(String deckHash, String refinedDeckHash, Long[] cardIds,
-                            BigDecimal avgLevel, int evolutionCount) {}
+                            BigDecimal avgLevel, int evolutionCount, Short[] evoLevels,
+                            Short[] cardLevels) {}
 }

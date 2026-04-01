@@ -77,6 +77,50 @@ public final class DeckHashUtils {
         return all.stream().sorted(Long::compareTo).toArray(Long[]::new);
     }
 
+    /**
+     * 카드 ID 정렬 순서(숫자 오름차순)와 동일한 순서로 정렬된 카드 레벨 배열
+     * match_features.card_levels / opponent_card_levels 저장 시 사용
+     *
+     * @param deckCardIds  8장 카드 ID 목록
+     * @param towerCardId  타워 카드 ID (null 허용, level=1 고정)
+     * @param levelsList   각 덱 카드의 레벨 (deckCardIds와 동일 순서)
+     */
+    public static Short[] sortedCardLevels(List<Long> deckCardIds, Long towerCardId,
+                                           List<Integer> levelsList) {
+        int n = deckCardIds.size();
+        List<long[]> pairs = new ArrayList<>(n + 1);
+        for (int i = 0; i < n; i++) {
+            pairs.add(new long[]{ deckCardIds.get(i), levelsList.get(i) });
+        }
+        if (towerCardId != null) pairs.add(new long[]{ towerCardId, 1L });
+        return pairs.stream()
+                .sorted(Comparator.comparingLong(a -> a[0]))
+                .map(a -> (short) a[1])
+                .toArray(Short[]::new);
+    }
+
+    /**
+     * 카드 ID 정렬 순서(숫자 오름차순)와 동일한 순서로 정렬된 evo level 배열
+     * refined_deck_dictionary.card_evo_levels 저장 시 사용
+     *
+     * @param deckCardIds   8장 카드 ID 목록
+     * @param towerCardId   타워 카드 ID (null 허용, evo=0 고정)
+     * @param evoLevelsList 각 덱 카드의 진화 레벨 (deckCardIds와 동일 순서)
+     */
+    public static Short[] sortedEvoLevels(List<Long> deckCardIds, Long towerCardId,
+                                          List<Integer> evoLevelsList) {
+        int n = deckCardIds.size();
+        List<long[]> pairs = new ArrayList<>(n + 1);
+        for (int i = 0; i < n; i++) {
+            pairs.add(new long[]{ deckCardIds.get(i), evoLevelsList.get(i) });
+        }
+        if (towerCardId != null) pairs.add(new long[]{ towerCardId, 0L });
+        return pairs.stream()
+                .sorted(Comparator.comparingLong(a -> a[0]))
+                .map(a -> (short) a[1])
+                .toArray(Short[]::new);
+    }
+
     private static String md5(String input) {
         try {
             MessageDigest md = MessageDigest.getInstance("MD5");
